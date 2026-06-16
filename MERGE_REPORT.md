@@ -185,13 +185,22 @@ the profile at SOS time so the patient row can change without rewriting history.
 | Broken imports / relations | source review + tsc | ✅ None |
 | API contract regressions | route/payload/response review | ✅ None — `src/` untouched |
 
-**Not performed (requires explicit user authorization — shared database mutation):**
-- `prisma migrate deploy` (apply the new migration to live `docsahab`)
-- `prisma db seed` (populate entities)
-- HTTP E2E run (`node test-e2e.js` against a running server)
+**Applied & verified against the local `docsahab` DB (2026-06-16, user-authorized):**
 
-> The auto-mode guardrail blocked live-DB mutation. The migration is proven correct/complete
-> by the DDL object-set diff above, so applying it is mechanical. See §12 for the exact commands.
+| Step | Result |
+|------|--------|
+| Migration applied | ✅ Both migrations applied via `prisma migrate reset` (replayed init → entity integration) |
+| Seed | ✅ 5 patients · 10 ambulances · 10 hospitals |
+| Tables created | ✅ Patient, Ambulance, Hospital (+ Emergency, TimelineEvent, HospitalCandidate) |
+| Foreign keys live | ✅ All 6 FKs present; reject invalid refs with `P2003` (verified positive + negative) |
+| Relationship resolution | ✅ Emergency→Patient/Ambulance/Hospital + HospitalCandidate→Hospital all resolve |
+| Relationship/FK test | ✅ **23/23 checks passed** |
+| HTTP E2E suite | ✅ **52/52 checks passed** — full lifecycle SOS→ARRIVED + validation/transition guards |
+
+> **Orphan-data note:** the initial `migrate deploy` failed (`P3018` / FK violation `23503`) because the
+> live DB held 19 pre-merge test `Emergency` rows referencing a non-existent `patient-arjun-001`.
+> With user authorization, the local dev DB was reset (`prisma migrate reset --force`), which replayed
+> both migrations cleanly and re-seeded. No production data was involved.
 
 ## 12. Integration Readiness Report
 
@@ -213,15 +222,14 @@ the profile at SOS time so the patient row can change without rewriting history.
 - **Ambulance:** Availability ✅ · Assignment ✅ · Dispatch ✅ · ETA ✅ (`Emergency.etaMinutes`).
 - **Hospital:** Ranking ✅ (`HospitalCandidate.rank`) · Acceptance ✅ (`HospitalResponse`) · Capability matching ✅ · Availability ✅ (`availableBeds`).
 
-### Remaining manual step (run when ready)
-```bash
-cd "backend person 1"
-npx prisma migrate deploy     # applies 20260616120000_integrate_patient_ambulance_hospital
-npx prisma db seed            # populates Patient/Ambulance/Hospital
-# optional end-to-end proof:
-npm run dev                   # in one terminal
-node test-e2e.js              # in another — expect all checks green
-```
+### Status: COMPLETE
+The migration, seed, and full verification have been applied to the local `docsahab` DB.
+The integration is finalized and ready for the remaining Docsahab modules.
+
+> Note: Prisma's seed runner invoked `tsx prisma/seed.ts` without `node_modules/.bin` on PATH and
+> reported `'tsx' is not recognized`. The seed runs correctly via `npx prisma db seed` /
+> `node_modules/.bin/tsx prisma/seed.ts`. Optional hardening: change the seed script to
+> `node --import tsx prisma/seed.ts` for PATH-independent execution.
 
 ### Rollback
 ```bash
