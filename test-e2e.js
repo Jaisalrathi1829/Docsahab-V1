@@ -132,12 +132,12 @@ async function main() {
   {
     const { status, data } = await req("PATCH", `/emergency/${emergencyId}/status`, {
       status: "AMBULANCE_ASSIGNED",
-      assignedAmbulanceId: "AMB-204",
+      assignedAmbulanceId: "amb-002",
       etaMinutes: 6,
-      description: "BLS unit AMB-204 dispatched",
+      description: "BLS unit DL-3C-AM-4522 dispatched",
     });
     log("→ AMBULANCE_ASSIGNED (200)", status === 200);
-    log("  Ambulance ID stored", data?.data?.assignedAmbulanceId === "AMB-204");
+    log("  Ambulance ID stored", data?.data?.assignedAmbulanceId === "amb-002");
     log("  ETA stored", data?.data?.etaMinutes === 6);
     log("  Timeline count = 2", data?.data?.timelineEvents?.length === 2);
   }
@@ -191,12 +191,12 @@ async function main() {
   {
     const { status, data } = await req("PATCH", `/emergency/${emergencyId}/status`, {
       status: "HOSPITAL_ACCEPTED",
-      assignedHospitalId: "hosp-st-mary",
+      assignedHospitalId: "hosp-001",
       etaMinutes: 8,
-      description: "St. Mary Hospital accepted",
+      description: "AIIMS Delhi accepted",
     });
     log("→ HOSPITAL_ACCEPTED (200)", status === 200);
-    log("  Hospital ID stored", data?.data?.assignedHospitalId === "hosp-st-mary");
+    log("  Hospital ID stored", data?.data?.assignedHospitalId === "hosp-001");
     log("  ETA updated to 8", data?.data?.etaMinutes === 8);
   }
 
