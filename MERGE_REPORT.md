@@ -51,7 +51,7 @@ Event bus (`emergencyEvents` EventEmitter) already exposed for the Realtime modu
 | 5 | **Emergency FK naming** — P5 `ambulanceId`/`hospitalId`; P1 `assignedAmbulanceId`/`assignedHospitalId` | Keep P1's clearer names. |
 | 6 | **Dependency drift** — P5 Express 5 / Prisma 6.19; P1 Express 4.21 / Prisma 6.9 (client generated as 6.19.3) | Keep P1's stack. No change required. |
 | 7 | **Migration drift** — schema integrated but no migration for the 3 entity tables / 4 FKs | **Fixed** by new migration (see §6). |
-| 8 | **Stale artifact** — `prisma/migration.sql` (loose, manual) only contains core tables and inserts a mismatched migration name `20260611_init` | Flagged; recommend deletion (see §4). Left in place for safety. |
+| 8 | **Stale artifact** — `prisma/migration.sql` (loose, manual) only contained core tables and inserted a mismatched migration name `20260611_init` | **Removed** in the finalization pass; `prisma/migrations/` is authoritative. |
 
 No conflicts were resolved in Person 5's favor. Emergency ownership is undivided.
 
@@ -73,12 +73,15 @@ No conflicts were resolved in Person 5's favor. Emergency ownership is undivided
 | `Docsahab-Backend person 5/index.js` | Ad-hoc SOS + entity endpoints replaced by the layered API. |
 | `Docsahab-Backend person 5/prisma/schema.prisma` | 7-state enum + thin Emergency model superseded. |
 | `Docsahab-Backend person 5/prisma/seed.js` | Replaced by `seed.ts`. |
-| `backend person 1/prisma/migration.sql` *(recommend delete)* | Stale loose SQL dump; the `prisma/migrations/` folder is authoritative. Left in place (non-destructive); team should remove. |
+| `backend person 1/prisma/migration.sql` | Stale loose SQL dump superseded by `prisma/migrations/`. **Removed** in the finalization pass (see §5). |
 
 ## 5. Files Removed
 
-**None.** The merge was achieved additively to preserve rollback. Deletions above are
-*recommendations* for the team, not actions taken.
+- `prisma/migration.sql` — obsolete loose SQL dump, **removed during the finalization pass**
+  (superseded by the authoritative `prisma/migrations/` folder). Verified beforehand that no
+  code, script, documentation, or Prisma configuration referenced it.
+
+The entity merge itself was achieved additively (no model or column drops) to preserve rollback.
 
 ## 6. Schema Changes
 
@@ -131,7 +134,6 @@ backend person 1/                         ← UNIFIED BACKEND (source of truth)
 ├── prisma/
 │   ├── schema.prisma                      6 models, 3 enums (unified)
 │   ├── seed.ts                            merged seed (Patient/Ambulance/Hospital)
-│   ├── migration.sql                      ⚠ stale loose dump (recommend delete)
 │   └── migrations/
 │       ├── 20260611161631_init/           Emergency, TimelineEvent, HospitalCandidate
 │       ├── 20260616120000_integrate_patient_ambulance_hospital/   ★ NEW (entities + FKs)
