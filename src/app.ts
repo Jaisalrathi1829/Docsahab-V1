@@ -10,6 +10,7 @@ import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
 import emergencyRoutes from "./routes/emergency.routes";
+import ambulanceRoutes from "./routes/ambulance.routes";
 import { errorHandler } from "./middleware/error-handler.middleware";
 import { errorResponse } from "./utils/api-response";
 
@@ -62,6 +63,9 @@ app.get("/api/v1/health", (_req, res) => {
 
 // Emergency Core Service routes
 app.use("/api/v1", emergencyRoutes);
+
+// Ambulance Matching module routes (Person 2) — mounted alongside, same prefix
+app.use("/api/v1", ambulanceRoutes);
 
 // --------------------------------------------------------------------------
 // 404 handler
