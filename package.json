@@ -12,7 +12,8 @@
     "prisma:studio": "prisma studio",
     "typecheck": "tsc --noEmit",
     "test:ambulance": "tsx test-ambulance.ts",
-    "test:hospital": "tsx test-hospital.ts"
+    "test:hospital": "tsx test-hospital.ts",
+    "test:realtime": "tsx test-realtime.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.9.0",
@@ -20,6 +21,7 @@
     "express": "^4.21.2",
     "helmet": "^8.1.0",
     "morgan": "^1.10.0",
+    "socket.io": "^4.8.3",
     "uuid": "^11.1.0",
     "zod": "^3.24.4"
   },
@@ -32,6 +34,7 @@
     "dotenv": "^17.4.2",
     "pg": "^8.21.0",
     "prisma": "^6.9.0",
+    "socket.io-client": "^4.8.3",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"
   },

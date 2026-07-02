@@ -4,11 +4,18 @@
 // Starts the Express server and connects to the database.
 // ============================================================================
 
+import http from "http";
 import app from "./app";
 import { prisma } from "./prisma/client";
 import { registerHospitalEventHandlers } from "./services/hospital.service";
+import { initRealtime } from "./services/realtime.service";
 
 const PORT = process.env.PORT ?? 3000;
+
+// Person 4: Socket.IO shares the SAME HTTP server as the Express API — one
+// backend, one port. `initRealtime` attaches the websocket gateway and the
+// emergencyEvents → rooms broadcast bridge.
+const server = http.createServer(app);
 
 async function main() {
   try {
@@ -20,7 +27,10 @@ async function main() {
     // assignment locks on PATIENT_PICKED_UP (event-driven, via emergencyEvents).
     registerHospitalEventHandlers();
 
-    app.listen(PORT, () => {
+    // Person 4: realtime gateway (rooms + event broadcasting).
+    initRealtime(server);
+
+    server.listen(PORT, () => {
       console.log(`
 ╔══════════════════════════════════════════════════╗
 ║                                                  ║

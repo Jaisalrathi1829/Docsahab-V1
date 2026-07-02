@@ -159,6 +159,18 @@ export async function findTimelineByEmergencyId(emergencyId: string) {
 }
 
 // --------------------------------------------------------------------------
+// Patient lookup
+// --------------------------------------------------------------------------
+
+/**
+ * Existence/identity lookup for a patient. Used by the Realtime module
+ * (Person 4) to validate `patient:{id}` room subscriptions.
+ */
+export async function findPatientById(id: string) {
+  return prisma.patient.findUnique({ where: { id } });
+}
+
+// --------------------------------------------------------------------------
 // Hospital Candidates
 // --------------------------------------------------------------------------
 // These methods are primarily for the Hospital Ranking & Acceptance module
