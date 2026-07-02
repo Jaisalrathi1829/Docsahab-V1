@@ -6,6 +6,7 @@
 
 import app from "./app";
 import { prisma } from "./prisma/client";
+import { registerHospitalEventHandlers } from "./services/hospital.service";
 
 const PORT = process.env.PORT ?? 3000;
 
@@ -14,6 +15,10 @@ async function main() {
     // Verify database connectivity
     await prisma.$connect();
     console.log("✅ Database connected successfully");
+
+    // Person 3: hospital discovery auto-starts on AMBULANCE_EN_ROUTE and the
+    // assignment locks on PATIENT_PICKED_UP (event-driven, via emergencyEvents).
+    registerHospitalEventHandlers();
 
     app.listen(PORT, () => {
       console.log(`

@@ -37,6 +37,16 @@ export const STATUS_LABELS: Record<EmergencyStatus, string> = {
  * - CANCELLED is reachable only from the first three states (before patient pickup).
  * - After pickup, the emergency MUST complete — no cancellation allowed.
  * - HOSPITAL_ACCEPTANCE_REQUESTED can loop back to HOSPITAL_SEARCHING (retry if all reject).
+ *
+ * Person 3 (official parallel workflow) — ADDITIVE edges only; every
+ * pre-existing path remains valid:
+ * - Hospital selection begins while the ambulance travels to the patient, so
+ *   an early acceptance may set HOSPITAL_ACCEPTED directly from
+ *   AMBULANCE_EN_ROUTE, and pickup may follow the early acceptance
+ *   (HOSPITAL_ACCEPTED → PATIENT_PICKED_UP).
+ * - When the hospital was already accepted+locked before pickup, severity
+ *   selection is followed directly by notification
+ *   (SEVERITY_SELECTED → HOSPITAL_NOTIFIED).
  */
 export const VALID_TRANSITIONS: Record<EmergencyStatus, EmergencyStatus[]> = {
   SOS_TRIGGERED: [
@@ -49,6 +59,7 @@ export const VALID_TRANSITIONS: Record<EmergencyStatus, EmergencyStatus[]> = {
   ],
   AMBULANCE_EN_ROUTE: [
     EmergencyStatus.PATIENT_PICKED_UP,
+    EmergencyStatus.HOSPITAL_ACCEPTED, // P3: early acceptance during transit
     EmergencyStatus.CANCELLED,
   ],
   PATIENT_PICKED_UP: [
@@ -56,6 +67,7 @@ export const VALID_TRANSITIONS: Record<EmergencyStatus, EmergencyStatus[]> = {
   ],
   SEVERITY_SELECTED: [
     EmergencyStatus.HOSPITAL_SEARCHING,
+    EmergencyStatus.HOSPITAL_NOTIFIED, // P3: hospital already accepted + locked
   ],
   HOSPITAL_SEARCHING: [
     EmergencyStatus.HOSPITAL_ACCEPTANCE_REQUESTED,
@@ -66,6 +78,7 @@ export const VALID_TRANSITIONS: Record<EmergencyStatus, EmergencyStatus[]> = {
   ],
   HOSPITAL_ACCEPTED: [
     EmergencyStatus.HOSPITAL_NOTIFIED,
+    EmergencyStatus.PATIENT_PICKED_UP, // P3: pickup after early (pre-pickup) acceptance
   ],
   HOSPITAL_NOTIFIED: [
     EmergencyStatus.EN_ROUTE_TO_HOSPITAL,

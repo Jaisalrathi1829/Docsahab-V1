@@ -11,7 +11,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "typecheck": "tsc --noEmit",
-    "test:ambulance": "tsx test-ambulance.ts"
+    "test:ambulance": "tsx test-ambulance.ts",
+    "test:hospital": "tsx test-hospital.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.9.0",

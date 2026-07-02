@@ -11,6 +11,7 @@ import helmet from "helmet";
 import morgan from "morgan";
 import emergencyRoutes from "./routes/emergency.routes";
 import ambulanceRoutes from "./routes/ambulance.routes";
+import hospitalRoutes from "./routes/hospital.routes";
 import { errorHandler } from "./middleware/error-handler.middleware";
 import { errorResponse } from "./utils/api-response";
 
@@ -66,6 +67,9 @@ app.use("/api/v1", emergencyRoutes);
 
 // Ambulance Matching module routes (Person 2) — mounted alongside, same prefix
 app.use("/api/v1", ambulanceRoutes);
+
+// Hospital Ranking & Acceptance module routes (Person 3) — same prefix
+app.use("/api/v1", hospitalRoutes);
 
 // --------------------------------------------------------------------------
 // 404 handler
