@@ -241,3 +241,25 @@ git branch -D merge/person5-entities-integration
 # DB (if the migration was applied): drop the 4 FKs + 3 tables, then
 #   DELETE FROM "_prisma_migrations" WHERE migration_name = '20260616120000_integrate_patient_ambulance_hospital';
 ```
+
+---
+
+## 13. Git Commits Involved
+
+Git was initialized inside `backend person 1/` for this merge (no repo existed previously).
+The P5 → P1 integration was performed on branch `merge/person5-entities-integration` and
+merged into `main` via a `--no-ff` merge. Commits (oldest → newest):
+
+| Commit | Branch | Message |
+|--------|--------|---------|
+| `27434a0` | `main` | chore: baseline snapshot of Emergency Core Service before Person 5 entity integration — **ROLLBACK POINT** |
+| `e91a682` | `merge/person5-entities-integration` | feat: complete Person 5 entity integration at the DB-migration layer |
+| `fcb514f` | `merge/person5-entities-integration` | docs: record applied-migration + verification results in merge report |
+| `ffb997d` | `merge/person5-entities-integration` | chore: remove obsolete prisma migration dump |
+| `bf9070e` | `main` | **Merge: Person 1 + Person 5 backend foundation integration** (`--no-ff`; current tip of `main`, frozen foundation) |
+
+- To inspect: `git show bf9070e` (the merge), `git show e91a682` (the migration), `git log --oneline --graph` (full history).
+- To roll the foundation back to the pre-integration state: `git checkout 27434a0` (code only; the DB also needs reverting per the Rollback section above).
+- **Note:** the repository has no configured git user — commits were made with `git -c user.name="merge-bot" -c user.email="merge@docsahab.local" commit …`.
+
+*(The later Person 2 / Ambulance Matching work lives on a separate branch `feature/person2-ambulance-matching` (`a03a2d2`) and is unrelated to this P5→P1 merge.)*
