@@ -13,7 +13,10 @@
     "typecheck": "tsc --noEmit",
     "test:ambulance": "tsx test-ambulance.ts",
     "test:hospital": "tsx test-hospital.ts",
-    "test:realtime": "tsx test-realtime.ts"
+    "test:realtime": "tsx test-realtime.ts",
+    "test:workflow": "node test-workflow-e2e.mjs",
+    "demo:reset": "tsx scripts/reset-demo.ts",
+    "demo:seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.9.0",

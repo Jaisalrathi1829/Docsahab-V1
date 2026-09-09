@@ -10,6 +10,22 @@
  */
 
 const BASE = "http://localhost:3000/api/v1";
+
+/** The 11 lifecycle transitions this suite drives, in order. */
+const LIFECYCLE_ORDER = [
+  "SOS_TRIGGERED",
+  "AMBULANCE_ASSIGNED",
+  "AMBULANCE_EN_ROUTE",
+  "PATIENT_PICKED_UP",
+  "SEVERITY_SELECTED",
+  "HOSPITAL_SEARCHING",
+  "HOSPITAL_ACCEPTANCE_REQUESTED",
+  "HOSPITAL_ACCEPTED",
+  "HOSPITAL_NOTIFIED",
+  "EN_ROUTE_TO_HOSPITAL",
+  "ARRIVED",
+];
+
 let emergencyId = null;
 let passed = 0;
 let failed = 0;
@@ -224,7 +240,16 @@ async function main() {
     });
     log("→ ARRIVED (200)", status === 200);
     log("  Final status is ARRIVED", data?.data?.status === "ARRIVED");
-    log("  Total timeline events = 11", data?.data?.timelineEvents?.length === 11);
+    // Every lifecycle transition must be recorded, in order. The count is a
+    // MINIMUM rather than an exact number because hospital coordination now
+    // runs automatically in the background and appends its own acceptance
+    // record — asserting an exact total would fail for a correct system.
+    log(
+      "  All 11 lifecycle transitions recorded",
+      LIFECYCLE_ORDER.every((s) =>
+        data?.data?.timelineEvents?.some((e) => e.status === s)
+      ) && data?.data?.timelineEvents?.length >= 11
+    );
   }
 
   // ─── 7. TERMINAL STATE — NO FURTHER TRANSITIONS ───
@@ -241,7 +266,10 @@ async function main() {
   {
     const { status, data } = await req("GET", `/emergency/${emergencyId}/timeline`);
     log("Timeline returns 200", status === 200);
-    log("Timeline has 11 events", data?.data?.length === 11);
+    log(
+      "Timeline contains all 11 lifecycle transitions",
+      LIFECYCLE_ORDER.every((s) => data?.data?.some((e) => e.status === s))
+    );
 
     if (data?.data?.length > 0) {
       const labels = data.data.map((e) => e.label);

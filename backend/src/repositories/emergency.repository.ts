@@ -13,6 +13,7 @@
 import { prisma } from "../prisma/client";
 import { EmergencyStatus, Severity, Prisma } from "@prisma/client";
 import { CreateEmergencyInput } from "../types/emergency.types";
+import { deriveCriticalAlert } from "../services/clinical-derivation.service";
 
 // --------------------------------------------------------------------------
 // Default includes for emergency queries — always load relations
@@ -52,11 +53,11 @@ export async function createEmergency(input: CreateEmergencyInput) {
       patientBloodGroup: input.patientBloodGroup,
       patientAllergies: input.patientAllergies ?? [],
       patientConditions: input.patientConditions ?? [],
-      // Auto-derive criticalAlert from first allergy if present
-      criticalAlert:
-        input.patientAllergies && input.patientAllergies.length > 0
-          ? `${input.patientAllergies[0]} Allergy`
-          : undefined,
+      patientMedications: input.patientMedications ?? [],
+      // Critical alert is derived from ALLERGIES (never from conditions —
+      // that is the separate "probable emergency" concept carried by
+      // `emergencyType`). Single source of truth for the derivation rule.
+      criticalAlert: deriveCriticalAlert(input.patientAllergies) ?? undefined,
     },
     include: EMERGENCY_INCLUDE,
   });
@@ -86,6 +87,10 @@ export async function updateEmergency(
     etaMinutes?: number;
     emergencyType?: string;
     criticalAlert?: string;
+    /** Stamped once, at patient pickup — makes the hospital destination final. */
+    hospitalLockedAt?: Date;
+    /** Stamped when the assigned hospital has been formally notified. */
+    hospitalNotifiedAt?: Date;
   }
 ) {
   return prisma.emergency.update({

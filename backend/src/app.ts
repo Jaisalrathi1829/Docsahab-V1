@@ -12,6 +12,7 @@ import morgan from "morgan";
 import emergencyRoutes from "./routes/emergency.routes";
 import ambulanceRoutes from "./routes/ambulance.routes";
 import hospitalRoutes from "./routes/hospital.routes";
+import workflowRoutes from "./routes/workflow.routes";
 import { errorHandler } from "./middleware/error-handler.middleware";
 import { errorResponse } from "./utils/api-response";
 
@@ -30,7 +31,9 @@ app.use(
     origin: process.env.NODE_ENV === "production"
       ? process.env.ALLOWED_ORIGINS?.split(",")
       : "*",
-    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    // PUT is required by the profile endpoints (patient + ambulance), which
+    // replace the whole profile rather than patching fields.
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
@@ -66,6 +69,9 @@ app.use("/api/v1", ambulanceRoutes);
 
 // Hospital Ranking & Acceptance module routes (Person 3) — same prefix
 app.use("/api/v1", hospitalRoutes);
+
+// Auth + patient app + ambulance app routes (the finalized client workflow)
+app.use("/api/v1", workflowRoutes);
 
 // --------------------------------------------------------------------------
 // 404 handler

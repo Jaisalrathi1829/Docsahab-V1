@@ -16,11 +16,23 @@ import { AppError } from "../middleware/error-handler.middleware";
 // --------------------------------------------------------------------------
 
 /**
- * All currently-available ambulances. Backed by the @@index([isAvailable]).
+ * Every ambulance ELIGIBLE for dispatch right now.
+ *
+ * Eligibility is two independent conditions, both required:
+ *   isOnline    — the crew has gone on-duty. An OFFLINE unit is invisible to
+ *                 dispatch no matter what else is true about it.
+ *   isAvailable — the unit is not already committed to another emergency.
+ *
+ * A unit with a placeholder (0,0) location has not shared a real position yet
+ * and is excluded, so dispatch never routes to the middle of the ocean.
  */
 export async function findAvailableAmbulances() {
   return prisma.ambulance.findMany({
-    where: { isAvailable: true },
+    where: {
+      isOnline: true,
+      isAvailable: true,
+      NOT: { latitude: 0, longitude: 0 },
+    },
   });
 }
 
@@ -70,9 +82,11 @@ export async function assignAmbulanceAtomically(params: {
     params;
 
   return prisma.$transaction(async (tx) => {
-    // 1. Atomic claim — only succeeds while the ambulance is still available.
+    // 1. Atomic claim — only succeeds while the ambulance is still ONLINE and
+    //    available. Re-checking isOnline here (not just at selection time)
+    //    closes the window where a crew goes off-duty mid-assignment.
     const claim = await tx.ambulance.updateMany({
-      where: { id: ambulanceId, isAvailable: true },
+      where: { id: ambulanceId, isOnline: true, isAvailable: true },
       data: { isAvailable: false },
     });
     if (claim.count === 0) {

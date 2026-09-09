@@ -35,6 +35,17 @@ model Patient {
   conditions  String[] @default([])
   phoneNumber String   @unique
 
+  // Current medications — shown to responders alongside allergies/conditions.
+  medications           String[] @default([])
+
+  // Next-of-kin reachable on the patient's behalf during an emergency.
+  emergencyContactName  String?
+  emergencyContactPhone String?
+
+  // Onboarding completes once the medical profile has been saved. Until then
+  // the app routes the user back into the profile step.
+  profileCompleted      Boolean  @default(false)
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -56,7 +67,40 @@ model Ambulance {
   vehicleNo   String   @unique
   latitude    Float
   longitude   Float
+
+  // --------------------------------------------------------------------------
+  // Dispatch state — TWO independent flags, both required for eligibility.
+  //   isOnline    : the crew has declared themselves on-duty (ONLINE/OFFLINE
+  //                 toggle in the ambulance app). An OFFLINE unit is never
+  //                 matched, even if it is otherwise free.
+  //   isAvailable : the unit is not currently committed to another emergency.
+  //                 Claimed atomically during assignment.
+  // --------------------------------------------------------------------------
+  isOnline    Boolean  @default(false)
   isAvailable Boolean  @default(true)
+
+  // --------------------------------------------------------------------------
+  // Crew identity / login (OTP simulation authenticates against phoneNumber)
+  // --------------------------------------------------------------------------
+  phoneNumber        String?  @unique
+  driverName         String?
+  driverLicense      String?
+  drivingExperience  String?
+
+  // --------------------------------------------------------------------------
+  // Vehicle details
+  // --------------------------------------------------------------------------
+  ambulanceType      String?
+  registrationNumber String?
+
+  // --------------------------------------------------------------------------
+  // Service details
+  // --------------------------------------------------------------------------
+  serviceArea        String?
+  baseLocation       String?
+  emergencyContact   String?
+
+  profileCompleted   Boolean  @default(false)
 
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -64,6 +108,8 @@ model Ambulance {
   emergencies Emergency[]
 
   @@index([isAvailable])
+  @@index([isOnline])
+  @@index([phoneNumber])
 }
 
 // ============================================================================
@@ -148,9 +194,30 @@ model Emergency {
   patientBloodGroup   String?
   patientAllergies    String[]        @default([])
   patientConditions   String[]        @default([])
+  patientMedications  String[]        @default([])
 
-  // The single most critical alert for responders (e.g., "Penicillin Allergy")
+  // The single most critical alert for responders (e.g., "Penicillin Allergy").
+  // Derived deterministically from the patient's ALLERGIES. Distinct from
+  // `emergencyType` (the probable emergency), which is derived from CONDITIONS.
   criticalAlert       String?
+
+  // --------------------------------------------------------------------------
+  // Medic ↔ patient call (simulation — no PSTN/WebRTC infrastructure exists).
+  // The medic initiates; the patient app reacts to this backend state and
+  // enters the speakerphone view automatically without answering.
+  // --------------------------------------------------------------------------
+  callStatus          CallStatus      @default(NONE)
+  callStartedAt       DateTime?
+  callEndedAt         DateTime?
+
+  // --------------------------------------------------------------------------
+  // Hospital assignment lifecycle
+  // Before pickup the assigned hospital is TEMPORARY and may be replaced by a
+  // better-ranked option. `hospitalLockedAt` is stamped at patient pickup;
+  // once set, the destination is final and later responses cannot change it.
+  // --------------------------------------------------------------------------
+  hospitalLockedAt    DateTime?
+  hospitalNotifiedAt  DateTime?
 
   // --------------------------------------------------------------------------
   // Relations
@@ -228,8 +295,61 @@ model HospitalCandidate {
 }
 
 // ============================================================================
+// Session — authenticated session for a patient or an ambulance crew
+// ============================================================================
+// Deliberately minimal: this MVP uses an opaque bearer token stored by the
+// client. `subjectId` points at either a Patient.id or an Ambulance.id
+// depending on `role`. There is no password — identity is established by the
+// OTP simulation against a verified mobile number.
+// ============================================================================
+
+model Session {
+  id        String      @id @default(uuid())
+  token     String      @unique
+  role      SessionRole
+  subjectId String
+  createdAt DateTime    @default(now())
+  expiresAt DateTime
+
+  @@index([token])
+  @@index([role, subjectId])
+}
+
+// ============================================================================
+// OtpChallenge — a pending mobile-number verification
+// ============================================================================
+// SIMULATION: no SMS provider is wired up. The challenge records which number
+// asked to log in; any syntactically valid 6-digit code verifies it. The row
+// exists so that verification cannot be performed for a number that never
+// requested a code.
+// ============================================================================
+
+model OtpChallenge {
+  id          String      @id @default(uuid())
+  phoneNumber String
+  role        SessionRole
+  consumedAt  DateTime?
+  createdAt   DateTime    @default(now())
+  expiresAt   DateTime
+
+  @@index([phoneNumber, role])
+}
+
+// ============================================================================
 // Enums
 // ============================================================================
+
+enum SessionRole {
+  PATIENT
+  AMBULANCE
+}
+
+enum CallStatus {
+  NONE
+  INITIATED
+  ACTIVE
+  ENDED
+}
 
 enum EmergencyStatus {
   SOS_TRIGGERED

@@ -6,7 +6,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import type { SosState } from "../App";
-import { ambulance } from "../App";
+import type { EmergencyView } from "../api";
 
 function Logo() {
   return (
@@ -125,12 +125,17 @@ function SosButton({
 
 function ActiveEmergencyCard({
   sos,
+  emergency,
   onViewDetails,
 }: {
   sos: SosState;
+  emergency: EmergencyView | null;
   onViewDetails?: () => void;
 }) {
-  const assigned = sos === "assigned";
+  // "Assigned" is a fact about the backend emergency, not a local timer.
+  const assigned = Boolean(emergency?.ambulance);
+  const etaMinutes =
+    emergency?.navigation.toPatient?.etaMinutes ?? emergency?.etaMinutes ?? null;
   return (
     <div className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-[0_10px_30px_-20px_rgba(15,42,76,0.3)]">
       <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
@@ -173,10 +178,10 @@ function ActiveEmergencyCard({
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-[15px] text-slate-900 tracking-tight leading-tight">
-                {ambulance.vehicle}
+                {emergency?.ambulance?.vehicleNo ?? "—"}
               </div>
               <div className="text-[12px] text-slate-500 mt-0.5">
-                {ambulance.unit}
+                {emergency?.ambulance?.type ?? "Ambulance"} unit
               </div>
             </div>
             <div className="text-right">
@@ -184,7 +189,7 @@ function ActiveEmergencyCard({
                 ETA
               </div>
               <div className="text-[18px] text-[#1f6feb] tracking-tight leading-tight">
-                {ambulance.eta}
+                {etaMinutes !== null ? `${etaMinutes} min` : "—"}
               </div>
             </div>
           </div>
@@ -208,6 +213,8 @@ function ActiveEmergencyCard({
 export function HomeScreen({
   sos,
   count,
+  emergency,
+  busy,
   onStartSos,
   onCancelSos,
   onOpenProfile,
@@ -215,6 +222,8 @@ export function HomeScreen({
 }: {
   sos: SosState;
   count: number;
+  emergency: EmergencyView | null;
+  busy?: boolean;
   onStartSos?: () => void;
   onCancelSos?: () => void;
   onOpenProfile?: () => void;
@@ -263,7 +272,7 @@ export function HomeScreen({
 
       {active && (
         <div className="px-5 pb-6 mt-auto">
-          <ActiveEmergencyCard sos={sos} onViewDetails={onViewDetails} />
+          <ActiveEmergencyCard sos={sos} emergency={emergency} onViewDetails={onViewDetails} />
         </div>
       )}
     </div>

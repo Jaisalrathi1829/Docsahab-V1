@@ -31,6 +31,7 @@ export interface CreateEmergencyInput {
   patientBloodGroup?: string;
   patientAllergies?: string[];
   patientConditions?: string[];
+  patientMedications?: string[];
 }
 
 /**

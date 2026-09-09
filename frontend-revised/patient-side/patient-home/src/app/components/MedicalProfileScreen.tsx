@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ChevronLeft,
   Pencil,
@@ -30,6 +30,8 @@ type Contact = {
 };
 
 type Entry = { id: string; title: string; meta: string };
+
+import type { PatientProfile as BackendPatientProfile } from "../api";
 
 type Profile = {
   name: string;
@@ -312,10 +314,62 @@ function AddButton({ label, onClick }: { label: string; onClick: () => void }) {
   );
 }
 
-export function MedicalProfileScreen({ onBack }: { onBack?: () => void }) {
-  const [profile, setProfile] = useState<Profile>(initialProfile);
-  const [draft, setDraft] = useState<Profile>(initialProfile);
+/**
+ * Maps the saved backend profile onto this screen's view model, so the patient
+ * sees what the responders will actually receive rather than sample data.
+ */
+function fromBackend(p: BackendPatientProfile | null): Profile {
+  if (!p) return initialProfile;
+  const toEntries = (values: string[], prefix: string): Entry[] =>
+    values.map((value, i) => ({ id: `${prefix}-${i}`, name: value, note: "" }));
+
+  return {
+    name: p.fullName || "—",
+    details: [
+      p.age ? `${p.age} years` : null,
+      p.sex || null,
+      p.phoneNumber ? `+91 ${p.phoneNumber}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · "),
+    bloodGroup: p.bloodGroup || "—",
+    organDonor: p.medications.length
+      ? `On ${p.medications.length} medication${p.medications.length > 1 ? "s" : ""}`
+      : "No current medications",
+    contacts: p.emergencyContactName
+      ? [
+          {
+            id: "ec",
+            name: p.emergencyContactName,
+            relation: "Emergency contact",
+            phone: p.emergencyContactPhone ? `+91 ${p.emergencyContactPhone}` : "—",
+            primary: true,
+          },
+        ]
+      : [],
+    allergies: toEntries(p.allergies, "a"),
+    conditions: toEntries(p.conditions, "c"),
+  };
+}
+
+export function MedicalProfileScreen({
+  profile: backendProfile,
+  onBack,
+}: {
+  profile?: BackendPatientProfile | null;
+  onBack?: () => void;
+}) {
+  const initial = fromBackend(backendProfile ?? null);
+  const [profile, setProfile] = useState<Profile>(initial);
+  const [draft, setDraft] = useState<Profile>(initial);
   const [editing, setEditing] = useState(false);
+
+  // Keep the view in sync when the saved profile arrives/changes.
+  useEffect(() => {
+    const next = fromBackend(backendProfile ?? null);
+    setProfile(next);
+    setDraft(next);
+  }, [backendProfile]);
 
   const data = editing ? draft : profile;
   const update = (patch: Partial<Profile>) =>

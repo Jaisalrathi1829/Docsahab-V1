@@ -167,6 +167,26 @@ export async function updateEmergencyStatus(
   if (input.criticalAlert !== undefined)
     updateData.criticalAlert = input.criticalAlert;
 
+  // 3b. Lifecycle-driven timestamps.
+  //
+  // Patient pickup is the moment the hospital destination becomes FINAL.
+  // Stamping it here — on the single path every status change flows through —
+  // means the lock cannot be bypassed by any caller, and it is stamped only
+  // once (a repeated pickup is already rejected by the transition guard above).
+  if (
+    input.status === EmergencyStatus.PATIENT_PICKED_UP &&
+    current.hospitalLockedAt === null
+  ) {
+    updateData.hospitalLockedAt = new Date();
+  }
+
+  if (
+    input.status === EmergencyStatus.HOSPITAL_NOTIFIED &&
+    current.hospitalNotifiedAt === null
+  ) {
+    updateData.hospitalNotifiedAt = new Date();
+  }
+
   // 4. Update the emergency
   const updated = await emergencyRepo.updateEmergency(emergencyId, updateData);
 

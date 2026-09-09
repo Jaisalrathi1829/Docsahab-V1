@@ -8,6 +8,7 @@ import http from "http";
 import app from "./app";
 import { prisma } from "./prisma/client";
 import { registerHospitalEventHandlers } from "./services/hospital.service";
+import { registerHospitalSelectionProvider } from "./providers/hospital-selection.provider";
 import { initRealtime } from "./services/realtime.service";
 
 const PORT = process.env.PORT ?? 3000;
@@ -26,6 +27,12 @@ async function main() {
     // Person 3: hospital discovery auto-starts on AMBULANCE_EN_ROUTE and the
     // assignment locks on PATIENT_PICKED_UP (event-driven, via emergencyEvents).
     registerHospitalEventHandlers();
+
+    // Hospital selection: with no hospital-facing console yet, the simulation
+    // provider accepts on the best-ranked hospital's behalf as soon as the
+    // ranking engine publishes candidates — so hospital coordination completes
+    // while the ambulance is still driving to the patient.
+    registerHospitalSelectionProvider();
 
     // Person 4: realtime gateway (rooms + event broadcasting).
     initRealtime(server);
