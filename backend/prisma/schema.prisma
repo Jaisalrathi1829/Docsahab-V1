@@ -1,0 +1,259 @@
+// ============================================================================
+// Docsahab Emergency Core Service — Prisma Schema
+// ============================================================================
+// This schema defines the data layer for emergency lifecycle management.
+// It is the single source of truth that all other modules depend on.
+//
+// Models:
+//   Emergency, TimelineEvent, HospitalCandidate  — Person 1 (Core)
+//   Patient, Ambulance, Hospital                 — Person 5 (Entities)
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// Patient — Person who can trigger an SOS emergency
+// ============================================================================
+// Integrated from Person 5's data layer. Fields are used to populate the
+// denormalized patient profile on the Emergency record at SOS creation time.
+// ============================================================================
+
+model Patient {
+  id          String   @id @default(uuid())
+  fullName    String
+  age         Int
+  sex         String?
+  bloodGroup  String
+  allergies   String[] @default([])
+  conditions  String[] @default([])
+  phoneNumber String   @unique
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  emergencies Emergency[]
+
+  @@index([phoneNumber])
+}
+
+// ============================================================================
+// Ambulance — Dispatchable emergency vehicle
+// ============================================================================
+// Integrated from Person 5's data layer. Used by the Ambulance Matching
+// module (Person 2) for availability queries, distance calculations, and
+// dispatch operations.
+// ============================================================================
+
+model Ambulance {
+  id          String   @id @default(uuid())
+  vehicleNo   String   @unique
+  latitude    Float
+  longitude   Float
+  isAvailable Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  emergencies Emergency[]
+
+  @@index([isAvailable])
+}
+
+// ============================================================================
+// Hospital — Facility that can accept emergency patients
+// ============================================================================
+// Integrated from Person 5's data layer. Used by the Hospital Ranking
+// module (Person 3) for capability matching, distance ranking, and the
+// multi-hospital acceptance workflow.
+// ============================================================================
+
+model Hospital {
+  id            String   @id @default(uuid())
+  name          String
+  latitude      Float
+  longitude     Float
+  hasICU        Boolean
+  hasTraumaCare Boolean
+  hasCardiology Boolean
+  availableBeds Int
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  emergencies        Emergency[]
+  hospitalCandidates HospitalCandidate[]
+
+  @@index([availableBeds])
+}
+
+// ============================================================================
+// Emergency — The central entity of the entire Docsahab platform
+// ============================================================================
+// Every SOS trigger creates one Emergency record. This record tracks the
+// complete lifecycle from SOS → Arrived, and is consumed by all frontends
+// (Patient, Ambulance, Hospital) and all backend modules.
+// ============================================================================
+
+model Emergency {
+  id                  String          @id @default(uuid())
+  patientId           String
+  patient             Patient         @relation(fields: [patientId], references: [id])
+
+  // Current lifecycle status
+  status              EmergencyStatus @default(SOS_TRIGGERED)
+
+  // Severity (set by ambulance crew after patient pickup)
+  severity            Severity?
+
+  // Type of emergency (e.g., "Cardiac Emergency", "Severe Trauma — RTA")
+  emergencyType       String?
+
+  // --------------------------------------------------------------------------
+  // Patient Location (captured at SOS trigger)
+  // --------------------------------------------------------------------------
+  patientLatitude     Float
+  patientLongitude    Float
+  patientAddress      String?
+
+  // --------------------------------------------------------------------------
+  // Assigned Resources
+  // Written by Ambulance Matching module and Hospital Acceptance module.
+  // --------------------------------------------------------------------------
+  assignedAmbulanceId String?
+  assignedAmbulance   Ambulance?      @relation(fields: [assignedAmbulanceId], references: [id])
+  assignedHospitalId  String?
+  assignedHospital    Hospital?       @relation(fields: [assignedHospitalId], references: [id])
+
+  // --------------------------------------------------------------------------
+  // ETA Tracking (in minutes, updated as the emergency progresses)
+  // --------------------------------------------------------------------------
+  etaMinutes          Int?
+
+  // --------------------------------------------------------------------------
+  // Patient Emergency Profile
+  // Denormalized from the patient profile at SOS creation time.
+  // This ensures all downstream consumers (ambulance, hospital) can read
+  // patient data without calling a separate service during an emergency.
+  // --------------------------------------------------------------------------
+  patientName         String?
+  patientAge          Int?
+  patientSex          String?
+  patientBloodGroup   String?
+  patientAllergies    String[]        @default([])
+  patientConditions   String[]        @default([])
+
+  // The single most critical alert for responders (e.g., "Penicillin Allergy")
+  criticalAlert       String?
+
+  // --------------------------------------------------------------------------
+  // Relations
+  // --------------------------------------------------------------------------
+  hospitalCandidates  HospitalCandidate[]
+  timelineEvents      TimelineEvent[]
+
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  @@index([patientId])
+  @@index([status])
+  @@index([assignedAmbulanceId])
+  @@index([assignedHospitalId])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// TimelineEvent — Immutable audit trail for every emergency
+// ============================================================================
+// Every status change automatically creates a TimelineEvent.
+// This powers the "Emergency Progress" stepper on all three frontends.
+// ============================================================================
+
+model TimelineEvent {
+  id            String          @id @default(uuid())
+  emergencyId   String
+  emergency     Emergency       @relation(fields: [emergencyId], references: [id], onDelete: Cascade)
+
+  // The status that was set when this event was created
+  status        EmergencyStatus
+
+  // Human-readable label (e.g., "Ambulance Assigned")
+  label         String
+
+  // Optional description (e.g., "Ambulance DL-3C-AM 4521 assigned")
+  description   String?
+
+  // Flexible metadata for module-specific data
+  metadata      Json?
+
+  createdAt     DateTime        @default(now())
+
+  @@index([emergencyId])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// HospitalCandidate — Tracks multi-hospital acceptance workflow
+// ============================================================================
+// When the Hospital Ranking module determines top candidates, it creates
+// HospitalCandidate records. Hospitals accept/reject, and the first
+// suitable acceptance finalizes the destination.
+// ============================================================================
+
+model HospitalCandidate {
+  id              String           @id @default(uuid())
+  emergencyId     String
+  emergency       Emergency        @relation(fields: [emergencyId], references: [id], onDelete: Cascade)
+
+  hospitalId      String
+  hospital        Hospital         @relation(fields: [hospitalId], references: [id])
+  hospitalName    String?
+  rank            Int
+
+  response        HospitalResponse @default(PENDING)
+  respondedAt     DateTime?
+  rejectionReason String?
+
+  createdAt       DateTime         @default(now())
+
+  @@unique([emergencyId, hospitalId])
+  @@index([emergencyId])
+  @@index([hospitalId])
+}
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+enum EmergencyStatus {
+  SOS_TRIGGERED
+  AMBULANCE_ASSIGNED
+  AMBULANCE_EN_ROUTE
+  PATIENT_PICKED_UP
+  SEVERITY_SELECTED
+  HOSPITAL_SEARCHING
+  HOSPITAL_ACCEPTANCE_REQUESTED
+  HOSPITAL_ACCEPTED
+  HOSPITAL_NOTIFIED
+  EN_ROUTE_TO_HOSPITAL
+  ARRIVED
+  CANCELLED
+}
+
+enum Severity {
+  RED
+  YELLOW
+  GREEN
+}
+
+enum HospitalResponse {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
