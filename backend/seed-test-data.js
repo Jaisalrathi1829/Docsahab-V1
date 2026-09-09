@@ -60,11 +60,13 @@ async function main() {
 
   // Write the ID to a file for frontend apps to read
   const fs = require("fs");
+  const path = require("path");
+  const outFile = path.join(__dirname, "active-emergency.json");
   fs.writeFileSync(
-    "d:\\PROJECTS\\DOCSAHAB\\Front End\\active-emergency.json",
+    outFile,
     JSON.stringify({ emergencyId: emergency.id, status: emergency.status }, null, 2)
   );
-  console.log("📁 Emergency ID saved to Front End/active-emergency.json");
+  console.log(`📁 Emergency ID saved to ${outFile}`);
 }
 
 main().catch((e) => {

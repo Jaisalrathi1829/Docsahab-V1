@@ -22,14 +22,3 @@ Thumbs.db
 
 # Prisma
 backend/prisma/pg_hba_backup.conf
-
-# Superseded / archived source (kept locally for reference only — see
-# docs/DOCSAHAB_CURRENT_STATE_AUDIT.md for what replaced each of these).
-# Each of these has its own separate git history/remote; they are
-# intentionally NOT part of this monorepo.
-/backend person 1/
-/Front End/
-/Front End_BACKUP_2026-08-19/
-/updated frontend/
-/Docsahab-Backend person 5/
-/ambulance-module Person 2/

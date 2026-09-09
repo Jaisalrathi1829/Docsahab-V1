@@ -1,0 +1,10 @@
+{
+  "description": "Streamline emergency response for ambulance drivers with a user-friendly interface that automates emergency assignments and navigation to patients.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

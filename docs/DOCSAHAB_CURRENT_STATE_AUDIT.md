@@ -11,6 +11,15 @@ deliberately *not* executed (see §17 for how test evidence was obtained instead
 `INFERENCE` = strongly implied but not directly executed ·
 `NOT VERIFIED` = insufficient evidence.
 
+> **2026-09-09 update — frontend superseded, backend findings unaffected.** The three
+> frontends this audit describes (`frontend/patient`, `frontend/ambulance`, `frontend/hospital`)
+> have since been retired in favor of a ground-up rebuild at `frontend-revised/`, which is
+> **not yet wired to the backend**. Every finding in this document about the **backend**
+> (§2–§10, §16, §19–§20) remains accurate and current. Findings specifically about **frontend
+> integration** (§8, §11–§14, §18's frontend columns) describe the retired frontend and are now
+> historical — read them as "this is what frontend↔backend integration looked like before the
+> rebuild," not as the current state.
+
 ---
 
 ## 1. Executive Summary

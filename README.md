@@ -16,25 +16,32 @@ reads/writes the emergency through it.
 
 ## Current status
 
-**Read [`docs/DOCSAHAB_CURRENT_STATE_AUDIT.md`](docs/DOCSAHAB_CURRENT_STATE_AUDIT.md) first.**
-It is a forensic, evidence-based audit of exactly what works today, what doesn't, and the
-smallest path to a reliable demo — verified against live source and the running system, not
-just documentation. Short version: the full intended workflow (SOS → ambulance dispatch →
-automatic hospital ranking → acceptance → pickup → triage → notification) works end-to-end
-today; realtime infrastructure is built but not yet wired into any frontend; two operational
-items need attention before a live demo (see the audit's §12 and §20).
+**Read [`docs/DOCSAHAB_CURRENT_STATE_AUDIT.md`](docs/DOCSAHAB_CURRENT_STATE_AUDIT.md) first**
+for the backend — it's a forensic, evidence-based audit of exactly what works today, verified
+against live source and the running system. Short version: the full intended backend workflow
+(SOS → ambulance dispatch → automatic hospital ranking → acceptance → pickup → triage →
+notification) works end-to-end.
+
+**Frontend note:** the audit describes an earlier frontend that has since been retired.
+`frontend-revised/` is the current, in-progress frontend rebuild and is **not yet wired to the
+backend** — see its own section below. The audit's backend findings remain accurate; its
+frontend-integration findings are historical.
 
 ## Repository structure
 
 ```
 docsahab/
-├── backend/              Express + TypeScript + Prisma/PostgreSQL API (single source of truth)
-├── frontend/
-│   ├── patient/          Patient app — trigger SOS, track emergency status
-│   ├── ambulance/        Ambulance crew app — dispatch, pickup, triage, notify hospital
-│   └── hospital/         Hospital console — incoming ranked requests, accept/decline
+├── backend/                    Express + TypeScript + Prisma/PostgreSQL API (single source of truth)
+├── frontend-revised/            Current frontend rebuild — NOT yet integrated with the backend
+│   ├── patient-side/
+│   │   ├── patient-home/
+│   │   └── patient-authentication/
+│   └── ambulance-side/
+│       ├── ambulance-home/
+│       └── ambulance-authentication/
+│       (hospital side: not started yet)
 ├── docs/
-│   ├── DOCSAHAB_CURRENT_STATE_AUDIT.md   ← current, authoritative
+│   ├── DOCSAHAB_CURRENT_STATE_AUDIT.md   ← current, authoritative (backend)
 │   └── archive/                          historical audits and handover docs (superseded)
 └── .gitignore
 ```
@@ -74,15 +81,18 @@ node_modules/.bin/tsx prisma/seed.ts
 npm run dev                 # http://localhost:3000/api/v1/health
 ```
 
-### Frontends (each is an independent Vite app)
+### Frontend
+
+`frontend-revised/` is being rebuilt and is **not yet connected to the backend** — each
+sub-app (`patient-side/patient-home`, `patient-side/patient-authentication`,
+`ambulance-side/ambulance-home`, `ambulance-side/ambulance-authentication`) is an independent
+Vite app you can run on its own:
 
 ```bash
-cd frontend/patient   && npm install && npm run dev
-cd frontend/ambulance  && npm install && npm run dev
-cd frontend/hospital   && npm install && npm run dev
+cd frontend-revised/patient-side/patient-home && npm install && npm run dev
 ```
 
-All three connect to the backend at `http://localhost:3000/api/v1`.
+Backend integration is deliberately deferred until the frontend rebuild is further along.
 
 ### Verifying the backend
 

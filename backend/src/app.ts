@@ -41,10 +41,6 @@ app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 // JSON body parsing
 app.use(express.json());
 
-// Serve static files from Front End directory (for active-emergency.json)
-import path from "path";
-app.use(express.static(path.resolve(__dirname, "../../Front End")));
-
 // --------------------------------------------------------------------------
 // Routes
 // --------------------------------------------------------------------------
