@@ -1,0 +1,111 @@
+/* ==========================================================================
+   Auth flow theme tokens
+   ==========================================================================
+   The onboarding screens (login / OTP / medical profile) were designed as a
+   separate Figma app with their own palette and entrance animation. They were
+   merged into this app so the patient has ONE origin — and therefore one
+   persistent session that survives a refresh — rather than being handed off
+   between two dev servers.
+
+   These tokens are additive: they introduce the `brand-*`, `ink` and
+   `slate-soft` colours plus the `font-display` family and `ds-*` animations
+   those screens reference. Nothing here overrides the existing app theme.
+   ========================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap');
+
+@theme {
+  --font-display: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+
+  --color-brand-50: #eef5ff;
+  --color-brand-100: #dbeafe;
+  --color-brand-200: #bfdbfe;
+  --color-brand-300: #93c5fd;
+  --color-brand-400: #60a5fa;
+  --color-brand-500: #2f7ff2;
+  --color-brand-600: #1c64e8;
+  --color-brand-700: #1750c4;
+  --color-ink: #0f1f3d;
+  --color-slate-soft: #64748b;
+}
+
+/* Hide scrollbars until scrolling (used by the onboarding phone frame) */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes ds-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.ds-enter {
+  animation: ds-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes ds-ripple {
+  0% {
+    transform: translate(-50%, -50%) scale(0.35);
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.5;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1.6);
+    opacity: 0;
+  }
+}
+
+@keyframes ds-glow {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: translate(-50%, -50%) scale(0.95);
+  }
+  50% {
+    opacity: 0.8;
+    transform: translate(-50%, -50%) scale(1.08);
+  }
+}
+
+@keyframes ds-drift {
+  0% {
+    transform: translateY(6px) translateX(0);
+    opacity: 0;
+  }
+  25% {
+    opacity: 0.7;
+  }
+  75% {
+    opacity: 0.5;
+  }
+  100% {
+    transform: translateY(-22px) translateX(6px);
+    opacity: 0;
+  }
+}
+
+@keyframes ds-logo-float {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-6px) scale(1.03);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-anim {
+    animation: none !important;
+  }
+}

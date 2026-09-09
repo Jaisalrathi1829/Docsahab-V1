@@ -1,0 +1,10 @@
+{
+  "description": "Streamline patient onboarding with a secure login, OTP verification, and profile setup for emergency medical assistance, ensuring a consistent Docsahab experience.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
