@@ -97,6 +97,14 @@ export async function getEmergencyById(id: string) {
   return emergency;
 }
 
+/**
+ * Returns the emergency currently in progress (most recent non-terminal), or
+ * null when none is active. Read-only discovery for the responder frontends.
+ */
+export async function getActiveEmergency() {
+  return emergencyRepo.findActiveEmergency();
+}
+
 // --------------------------------------------------------------------------
 // Update Emergency Status
 // --------------------------------------------------------------------------

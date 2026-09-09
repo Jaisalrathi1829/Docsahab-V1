@@ -58,6 +58,9 @@ export async function findPendingRequestsForHospital(hospitalId: string) {
       emergency: {
         include: {
           assignedAmbulance: true,
+          // The console renders the emergency's audit trail alongside the
+          // request, so the timeline travels with it.
+          timelineEvents: { orderBy: { createdAt: "asc" } },
         },
       },
     },

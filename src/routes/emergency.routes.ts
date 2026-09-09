@@ -26,6 +26,12 @@ router.post(
 );
 
 // --------------------------------------------------------------------------
+// GET /emergencies/active — Emergency currently in progress (responder consoles)
+// Declared BEFORE /emergency/:id so it is never shadowed by the UUID route.
+// --------------------------------------------------------------------------
+router.get("/emergencies/active", emergencyController.getActiveEmergency);
+
+// --------------------------------------------------------------------------
 // GET /emergency/:id — Get complete emergency information
 // --------------------------------------------------------------------------
 router.get(

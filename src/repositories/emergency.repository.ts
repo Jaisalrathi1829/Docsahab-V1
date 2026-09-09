@@ -158,6 +158,23 @@ export async function findTimelineByEmergencyId(emergencyId: string) {
   });
 }
 
+/**
+ * The most recent emergency that has not reached a terminal state.
+ * Used by the responder frontends (ambulance/hospital consoles) to discover
+ * the emergency currently in progress without a hardcoded bootstrap file.
+ */
+export async function findActiveEmergency() {
+  return prisma.emergency.findFirst({
+    where: {
+      status: {
+        notIn: [EmergencyStatus.ARRIVED, EmergencyStatus.CANCELLED],
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    include: EMERGENCY_INCLUDE,
+  });
+}
+
 // --------------------------------------------------------------------------
 // Patient lookup
 // --------------------------------------------------------------------------

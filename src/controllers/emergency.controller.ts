@@ -51,6 +51,31 @@ export async function createEmergency(
  * - Hospital dashboard (incoming request details, timeline)
  * - All backend modules for current state queries
  */
+/**
+ * GET /api/v1/emergencies/active — the emergency currently in progress.
+ * Returns `null` data (200) when nothing is active, so responder consoles can
+ * poll without treating "idle" as an error.
+ */
+export async function getActiveEmergency(
+  _req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const emergency = await emergencyService.getActiveEmergency();
+    res
+      .status(200)
+      .json(
+        successResponse(
+          emergency,
+          emergency ? "Active emergency retrieved" : "No active emergency"
+        )
+      );
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function getEmergencyById(
   req: Request<{ id: string }>,
   res: Response,
