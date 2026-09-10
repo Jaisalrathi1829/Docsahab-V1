@@ -11,7 +11,6 @@ import helmet from "helmet";
 import morgan from "morgan";
 import emergencyRoutes from "./routes/emergency.routes";
 import ambulanceRoutes from "./routes/ambulance.routes";
-import hospitalRoutes from "./routes/hospital.routes";
 import workflowRoutes from "./routes/workflow.routes";
 import { errorHandler } from "./middleware/error-handler.middleware";
 import { errorResponse } from "./utils/api-response";
@@ -67,10 +66,15 @@ app.use("/api/v1", emergencyRoutes);
 // Ambulance Matching module routes (Person 2) — mounted alongside, same prefix
 app.use("/api/v1", ambulanceRoutes);
 
-// Hospital Ranking & Acceptance module routes (Person 3) — same prefix
-app.use("/api/v1", hospitalRoutes);
+// NOTE: the legacy, UNAUTHENTICATED hospital.routes.ts (find-hospitals,
+// hospital-response, hospital requests inbox) is intentionally NOT mounted.
+// The real hospital-decision-engine + authenticated Hospital console
+// (workflowRoutes below) are the sole live hospital decision path — see
+// hospital-engine.service.ts. hospital.routes.ts / hospital.controller.ts /
+// hospital.service.ts's ranking functions remain in the repo for reference
+// and existing unit tests, but are not reachable in the running server.
 
-// Auth + patient app + ambulance app routes (the finalized client workflow)
+// Auth + patient app + ambulance app + hospital console routes (the finalized client workflow)
 app.use("/api/v1", workflowRoutes);
 
 // --------------------------------------------------------------------------

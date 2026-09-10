@@ -130,13 +130,65 @@ model Hospital {
   hasCardiology Boolean
   availableBeds Int
 
+  // Hospital console login (OTP simulation, same pattern as Patient/Ambulance).
+  // Hospitals are pre-provisioned entities (seeded), not self-registering, so
+  // profileCompleted defaults true — there is no onboarding step.
+  phoneNumber      String?  @unique
+  profileCompleted Boolean  @default(true)
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   emergencies        Emergency[]
   hospitalCandidates HospitalCandidate[]
+  liveStatus         HospitalLiveStatus?
 
   @@index([availableBeds])
+}
+
+// ============================================================================
+// HospitalLiveStatus — dynamic operational/capacity data (separate from the
+// static Hospital profile above). This is what the hospital-decision-engine's
+// HospitalLiveStatusProvider reads, and what the Hospital console updates via
+// its own authenticated session. `lastUpdated` drives the engine's real
+// FRESH/STALE/EXPIRED freshness classification.
+// ============================================================================
+
+model HospitalLiveStatus {
+  hospitalId String   @id
+  hospital   Hospital @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+
+  acceptingEmergencyPatients Boolean @default(true)
+  operationalStatus          String  @default("OPERATIONAL")
+  emergencyDepartmentStatus  String  @default("AVAILABLE")
+  traumaDepartmentStatus     String  @default("AVAILABLE")
+
+  icuBedsAvailable       Int     @default(0)
+  generalBedsAvailable   Int     @default(0)
+  erBaysAvailable        Int     @default(0)
+  traumaBaysAvailable    Int     @default(0)
+  ventilatorsAvailable   Int     @default(0)
+  bloodProductsAvailable Boolean @default(true)
+
+  lastUpdated DateTime @default(now())
+  dataSource  String   @default("HOSPITAL_OPERATED")
+
+  @@index([lastUpdated])
+}
+
+// ============================================================================
+// HospitalSelectionState — the hospital-decision-engine's persisted
+// SelectionSnapshot for one emergency, with an optimistic-concurrency
+// version. This is the ONLY hospital-selection authority; Emergency.
+// assignedHospitalId is kept in sync with it in the same transaction.
+// ============================================================================
+
+model HospitalSelectionState {
+  emergencyId String    @id
+  emergency   Emergency @relation(fields: [emergencyId], references: [id], onDelete: Cascade)
+  snapshot    Json
+  version     Int       @default(1)
+  updatedAt   DateTime  @updatedAt
 }
 
 // ============================================================================
@@ -222,8 +274,9 @@ model Emergency {
   // --------------------------------------------------------------------------
   // Relations
   // --------------------------------------------------------------------------
-  hospitalCandidates  HospitalCandidate[]
-  timelineEvents      TimelineEvent[]
+  hospitalCandidates     HospitalCandidate[]
+  timelineEvents         TimelineEvent[]
+  hospitalSelectionState HospitalSelectionState?
 
   createdAt           DateTime        @default(now())
   updatedAt           DateTime        @updatedAt
@@ -342,6 +395,7 @@ model OtpChallenge {
 enum SessionRole {
   PATIENT
   AMBULANCE
+  HOSPITAL
 }
 
 enum CallStatus {

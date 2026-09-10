@@ -9,6 +9,7 @@ import { SessionRole } from "@prisma/client";
 import * as authService from "../services/auth.service";
 import * as patientService from "../services/patient.service";
 import * as crewService from "../services/ambulance-crew.service";
+import * as hospitalProfileService from "../services/hospital-profile.service";
 import { getRequestToken } from "../middleware/auth.middleware";
 import { successResponse } from "../utils/api-response";
 
@@ -55,6 +56,8 @@ export const requestPatientOtp = requestOtpFor(SessionRole.PATIENT);
 export const verifyPatientOtp = verifyOtpFor(SessionRole.PATIENT);
 export const requestAmbulanceOtp = requestOtpFor(SessionRole.AMBULANCE);
 export const verifyAmbulanceOtp = verifyOtpFor(SessionRole.AMBULANCE);
+export const requestHospitalOtp = requestOtpFor(SessionRole.HOSPITAL);
+export const verifyHospitalOtp = verifyOtpFor(SessionRole.HOSPITAL);
 
 /**
  * GET /auth/me — who is this session, and does onboarding still need doing.
@@ -73,7 +76,9 @@ export async function getCurrentUser(
     const subject =
       role === SessionRole.PATIENT
         ? await patientService.getProfile(subjectId)
-        : await crewService.getProfile(subjectId);
+        : role === SessionRole.AMBULANCE
+          ? await crewService.getProfile(subjectId)
+          : await hospitalProfileService.getProfile(subjectId);
 
     res.status(200).json(
       successResponse(

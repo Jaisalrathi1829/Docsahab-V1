@@ -53,6 +53,18 @@ function assertValidPhone(phone: string): string {
   return normalized;
 }
 
+async function requireRegisteredHospital(phoneNumber: string) {
+  const hospital = await authRepo.findHospitalByPhone(phoneNumber);
+  if (!hospital) {
+    throw new AppError(
+      404,
+      "HOSPITAL_NOT_REGISTERED",
+      `${phoneNumber} is not a registered hospital number`
+    );
+  }
+  return hospital;
+}
+
 // --------------------------------------------------------------------------
 // OTP
 // --------------------------------------------------------------------------
@@ -122,13 +134,19 @@ export async function verifyOtp(
 
   await authRepo.consumeOtpChallenge(challenge.id);
 
-  // Find-or-create the subject this number owns.
+  // Find-or-create the subject this number owns. Hospitals are the one
+  // exception: they are pre-provisioned (seeded) entities, never self-
+  // registering, so an unrecognized number is a hard error rather than a
+  // fresh shell — a real hospital ranking engine cannot safely rank a
+  // fabricated hospital record.
   const subject =
     role === SessionRole.PATIENT
       ? (await authRepo.findPatientByPhone(phoneNumber)) ??
         (await authRepo.createPatientShell(phoneNumber))
-      : (await authRepo.findAmbulanceByPhone(phoneNumber)) ??
-        (await authRepo.createAmbulanceShell(phoneNumber));
+      : role === SessionRole.AMBULANCE
+        ? (await authRepo.findAmbulanceByPhone(phoneNumber)) ??
+          (await authRepo.createAmbulanceShell(phoneNumber))
+        : await requireRegisteredHospital(phoneNumber);
 
   const token = randomBytes(32).toString("hex");
   await authRepo.createSession({

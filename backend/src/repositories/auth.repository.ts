@@ -80,6 +80,15 @@ export async function findAmbulanceByPhone(phoneNumber: string) {
   return prisma.ambulance.findUnique({ where: { phoneNumber } });
 }
 
+/**
+ * Hospitals are pre-provisioned (seeded), not self-registering — there is no
+ * shell-creation counterpart. A phone number that isn't already attached to a
+ * seeded Hospital row simply isn't a registered hospital.
+ */
+export async function findHospitalByPhone(phoneNumber: string) {
+  return prisma.hospital.findUnique({ where: { phoneNumber } });
+}
+
 export async function findPatientById(id: string) {
   return prisma.patient.findUnique({ where: { id } });
 }

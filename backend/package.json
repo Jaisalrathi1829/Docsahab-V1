@@ -23,6 +23,7 @@
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "helmet": "^8.1.0",
+    "hospital-decision-engine": "file:../hospital-decision-engine",
     "morgan": "^1.10.0",
     "socket.io": "^4.8.3",
     "uuid": "^11.1.0",

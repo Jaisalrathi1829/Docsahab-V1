@@ -116,7 +116,7 @@ export async function triggerSos(patientId: string, input: TriggerSosInput) {
   let assigned = false;
   let note: string | null = null;
   try {
-    await ambulanceService.assignNearestAmbulance(emergency.id);
+    await ambulanceService.assignNearestAmbulance(emergency.id, patient.phoneNumber);
     assigned = true;
   } catch (error) {
     note =

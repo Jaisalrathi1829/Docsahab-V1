@@ -7,8 +7,7 @@
 import http from "http";
 import app from "./app";
 import { prisma } from "./prisma/client";
-import { registerHospitalEventHandlers } from "./services/hospital.service";
-import { registerHospitalSelectionProvider } from "./providers/hospital-selection.provider";
+import { registerHospitalEngineEventHandlers } from "./services/hospital-engine.service";
 import { initRealtime } from "./services/realtime.service";
 
 const PORT = process.env.PORT ?? 3000;
@@ -24,15 +23,12 @@ async function main() {
     await prisma.$connect();
     console.log("✅ Database connected successfully");
 
-    // Person 3: hospital discovery auto-starts on AMBULANCE_EN_ROUTE and the
-    // assignment locks on PATIENT_PICKED_UP (event-driven, via emergencyEvents).
-    registerHospitalEventHandlers();
-
-    // Hospital selection: with no hospital-facing console yet, the simulation
-    // provider accepts on the best-ranked hospital's behalf as soon as the
-    // ranking engine publishes candidates — so hospital coordination completes
-    // while the ambulance is still driving to the patient.
-    registerHospitalSelectionProvider();
+    // Hospital decision authority: the remediated hospital-decision-engine is
+    // the SOLE ranking/selection authority, live (not shadow mode). Discovery
+    // auto-starts on AMBULANCE_EN_ROUTE; the assignment locks on
+    // PATIENT_PICKED_UP. Real hospitals accept/decline via their own
+    // authenticated console — no simulation/auto-accept provider is registered.
+    registerHospitalEngineEventHandlers();
 
     // Person 4: realtime gateway (rooms + event broadcasting).
     initRealtime(server);

@@ -106,6 +106,8 @@ const hospitals = [
     hasTraumaCare: true,
     hasCardiology: true,
     availableBeds: 12,
+    phoneNumber: "9700000001",
+    liveStatus: { icuBedsAvailable: 6, generalBedsAvailable: 12, erBaysAvailable: 8, traumaBaysAvailable: 5, ventilatorsAvailable: 4 },
   },
   {
     id: "hosp-002",
@@ -116,6 +118,8 @@ const hospitals = [
     hasTraumaCare: true,
     hasCardiology: false,
     availableBeds: 8,
+    phoneNumber: "9700000002",
+    liveStatus: { icuBedsAvailable: 3, generalBedsAvailable: 8, erBaysAvailable: 6, traumaBaysAvailable: 4, ventilatorsAvailable: 2 },
   },
   {
     id: "hosp-003",
@@ -126,6 +130,8 @@ const hospitals = [
     hasTraumaCare: true,
     hasCardiology: true,
     availableBeds: 15,
+    phoneNumber: "9700000003",
+    liveStatus: { icuBedsAvailable: 8, generalBedsAvailable: 15, erBaysAvailable: 10, traumaBaysAvailable: 6, ventilatorsAvailable: 5 },
   },
   {
     id: "hosp-004",
@@ -136,6 +142,8 @@ const hospitals = [
     hasTraumaCare: false,
     hasCardiology: true,
     availableBeds: 6,
+    phoneNumber: "9700000004",
+    liveStatus: { icuBedsAvailable: 3, generalBedsAvailable: 6, erBaysAvailable: 4, traumaBaysAvailable: 0, ventilatorsAvailable: 2 },
   },
   {
     id: "hosp-005",
@@ -146,6 +154,8 @@ const hospitals = [
     hasTraumaCare: false,
     hasCardiology: true,
     availableBeds: 10,
+    phoneNumber: "9700000005",
+    liveStatus: { icuBedsAvailable: 5, generalBedsAvailable: 10, erBaysAvailable: 6, traumaBaysAvailable: 0, ventilatorsAvailable: 4 },
   },
   {
     id: "hosp-006",
@@ -156,6 +166,8 @@ const hospitals = [
     hasTraumaCare: true,
     hasCardiology: false,
     availableBeds: 4,
+    phoneNumber: "9700000006",
+    liveStatus: { icuBedsAvailable: 1, generalBedsAvailable: 4, erBaysAvailable: 3, traumaBaysAvailable: 2, ventilatorsAvailable: 1 },
   },
   {
     id: "hosp-007",
@@ -166,6 +178,8 @@ const hospitals = [
     hasTraumaCare: true,
     hasCardiology: true,
     availableBeds: 9,
+    phoneNumber: "9700000007",
+    liveStatus: { icuBedsAvailable: 4, generalBedsAvailable: 9, erBaysAvailable: 6, traumaBaysAvailable: 4, ventilatorsAvailable: 3 },
   },
   {
     id: "hosp-008",
@@ -176,6 +190,8 @@ const hospitals = [
     hasTraumaCare: true,
     hasCardiology: true,
     availableBeds: 20,
+    phoneNumber: "9700000008",
+    liveStatus: { icuBedsAvailable: 10, generalBedsAvailable: 20, erBaysAvailable: 14, traumaBaysAvailable: 8, ventilatorsAvailable: 8 },
   },
   {
     id: "hosp-009",
@@ -186,6 +202,8 @@ const hospitals = [
     hasTraumaCare: false,
     hasCardiology: true,
     availableBeds: 7,
+    phoneNumber: "9700000009",
+    liveStatus: { icuBedsAvailable: 3, generalBedsAvailable: 7, erBaysAvailable: 5, traumaBaysAvailable: 0, ventilatorsAvailable: 2 },
   },
   {
     id: "hosp-010",
@@ -196,6 +214,25 @@ const hospitals = [
     hasTraumaCare: true,
     hasCardiology: false,
     availableBeds: 11,
+    phoneNumber: "9700000010",
+    liveStatus: { icuBedsAvailable: 5, generalBedsAvailable: 11, erBaysAvailable: 7, traumaBaysAvailable: 5, ventilatorsAvailable: 3 },
+  },
+  // Demo hospital (hackathon demo pair: patient 1111111111 -> ambulance
+  // 2222222222 -> this hospital, 3333333333). A REAL seeded hospital, at the
+  // demo ambulance's Connaught Place position for a genuinely strong ETA
+  // score, with full capabilities/capacity so it is honestly eligible for
+  // any emergency type — no fabricated eligibility, no special-cased data.
+  {
+    id: "hosp-demo-001",
+    name: "Docsahab Demo Hospital",
+    latitude: 28.6139,
+    longitude: 77.2090,
+    hasICU: true,
+    hasTraumaCare: true,
+    hasCardiology: true,
+    availableBeds: 25,
+    phoneNumber: "3333333333",
+    liveStatus: { icuBedsAvailable: 12, generalBedsAvailable: 25, erBaysAvailable: 15, traumaBaysAvailable: 10, ventilatorsAvailable: 10 },
   },
 ];
 
@@ -245,15 +282,32 @@ async function main() {
   }
   console.log(`  ✅ ${ambulances.length} ambulances seeded`);
 
-  // Hospitals
+  // Hospitals — update branch carries the FULL payload so re-seeding an
+  // existing row applies new fields (phoneNumber, etc.), not just creates.
   for (const h of hospitals) {
+    const { liveStatus, ...hospitalFields } = h;
     await prisma.hospital.upsert({
       where: { id: h.id },
-      update: {},
-      create: h,
+      update: hospitalFields,
+      create: hospitalFields,
+    });
+    await prisma.hospitalLiveStatus.upsert({
+      where: { hospitalId: h.id },
+      update: { ...liveStatus, lastUpdated: new Date() },
+      create: {
+        hospitalId: h.id,
+        acceptingEmergencyPatients: true,
+        operationalStatus: "OPERATIONAL",
+        emergencyDepartmentStatus: "AVAILABLE",
+        traumaDepartmentStatus: h.hasTraumaCare ? "AVAILABLE" : "UNKNOWN",
+        ...liveStatus,
+        bloodProductsAvailable: true,
+        dataSource: "SEED",
+        lastUpdated: new Date(),
+      },
     });
   }
-  console.log(`  ✅ ${hospitals.length} hospitals seeded`);
+  console.log(`  ✅ ${hospitals.length} hospitals seeded (with real live-status rows)`);
 
   console.log("\n🎉 Seed complete!\n");
 }

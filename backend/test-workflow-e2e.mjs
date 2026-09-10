@@ -77,7 +77,16 @@ async function main() {
   const stale = await pre.emergency.deleteMany({
     where: { status: { notIn: ["ARRIVED", "CANCELLED"] } },
   });
-  await pre.ambulance.updateMany({ data: { isOnline: true, isAvailable: true } });
+  // Deterministic dispatch: ONLY amb-001 (the ambulance this suite drives) is
+  // online, at its canonical seeded position. Any other online unit —
+  // including the demo-routing ambulance, which can sit at the same
+  // coordinates — would otherwise be a legitimate but non-deterministic
+  // competitor for "nearest," which is not what this suite is testing.
+  await pre.ambulance.updateMany({ data: { isOnline: false } });
+  await pre.ambulance.update({
+    where: { id: "amb-001" },
+    data: { isOnline: true, isAvailable: true, latitude: 28.6139, longitude: 77.209 },
+  });
   await pre.$disconnect();
   if (stale.count > 0) {
     console.log(`\n  ⓘ pre-flight: cleared ${stale.count} in-progress emergency/ies from a previous run`);
@@ -216,14 +225,53 @@ async function main() {
   const enRoute = await call("POST", `/ambulance/me/emergency/${emergencyId}/en-route`, { token: ambToken });
   ok("status → AMBULANCE_EN_ROUTE", enRoute.data?.status === "AMBULANCE_EN_ROUTE");
 
+  // The REAL hospital-decision-engine ranks asynchronously (fire-and-forget on
+  // the statusChanged event) — poll the DB for its real candidate rows rather
+  // than assuming a fixed delay.
+  const { PrismaClient: RankPrismaClient } = await import("@prisma/client");
+  const rankDb = new RankPrismaClient();
+  const rankedCandidates = await waitFor(
+    () => rankDb.hospitalCandidate.findMany({ where: { emergencyId }, orderBy: { rank: "asc" } }),
+    (rows) => rows.length > 0
+  );
+  ok("real hospital-decision-engine ranked real candidates", rankedCandidates.length > 0, `${rankedCandidates.length} candidate(s)`);
+
+  const topCandidate = rankedCandidates[0];
+  const topHospital = await rankDb.hospital.findUnique({ where: { id: topCandidate.hospitalId } });
+  ok("top candidate is a real, capability-eligible hospital", Boolean(topHospital?.hasCardiology), topHospital?.name);
+
+  // A REAL hospital session (not a simulation) accepts through the REAL
+  // authenticated console endpoint — the only path that can move
+  // assignedHospitalId.
+  await call("POST", "/auth/hospital/request-otp", { body: { phoneNumber: topHospital.phoneNumber } });
+  const hospSession = await call("POST", "/auth/hospital/verify-otp", {
+    body: { phoneNumber: topHospital.phoneNumber, code: "111111" },
+  });
+  ok("real hospital session issued", Boolean(hospSession.data?.token));
+
+  const hospPending = await call("GET", "/hospital/me/requests", { token: hospSession.data.token });
+  ok(
+    "hospital sees ONLY Name/Age/Sex on its pending request (no extra medical data)",
+    hospPending.data?.length > 0 &&
+      Object.keys(hospPending.data[0]).sort().join(",") === "candidateId,emergencyId,patientAge,patientName,patientSex,rank"
+  );
+
+  const accept = await call("POST", `/hospital/me/requests/${topCandidate.id}/respond`, {
+    token: hospSession.data.token,
+    body: { response: "ACCEPTED" },
+  });
+  ok("real hospital ACCEPT succeeds", accept.status === 200);
+
   const withHospital = await waitFor(
     () => call("GET", "/ambulance/me/emergency", { token: ambToken }),
     (r) => Boolean(r.data?.hospital)
   );
-  ok("hospital selected by the backend provider BEFORE pickup", Boolean(withHospital.data?.hospital), withHospital.data?.hospital?.name);
+  ok("real accepted hospital reaches the AMBULANCE view", Boolean(withHospital.data?.hospital), withHospital.data?.hospital?.name);
+  ok("accepted hospital IS the engine's top-ranked candidate", withHospital.data?.hospital?.id === topHospital.id);
   ok("hospital assignment is TEMPORARY before pickup", withHospital.data?.hospital?.temporary === true);
   ok("hospital is NOT locked before pickup", withHospital.data?.hospital?.locked === false);
   ok("hospital ETA computed", withHospital.data?.navigation?.toHospital?.etaMinutes > 0);
+  await rankDb.$disconnect();
 
   const hospitalBeforePickup = withHospital.data.hospital.id;
 
@@ -250,11 +298,24 @@ async function main() {
     call("POST", `/ambulance/me/emergency/${emergencyId}/pickup`, { token: ambToken })
   );
 
-  // A late hospital acceptance must NOT move a locked destination.
-  const otherHospital = hospitalBeforePickup === "hosp-003" ? "hosp-002" : "hosp-003";
-  await call("POST", `/emergency/${emergencyId}/hospital-response`, {
-    body: { hospitalId: otherHospital, response: "ACCEPTED" },
-  });
+  // A late REAL hospital acceptance (rank #2, still PENDING) must NOT move a
+  // locked destination — the engine fails this closed, not the test mocking it.
+  const { PrismaClient: LatePrismaClient } = await import("@prisma/client");
+  const lateDb = new LatePrismaClient();
+  const secondCandidate = rankedCandidates[1];
+  if (secondCandidate) {
+    const secondHospital = await lateDb.hospital.findUnique({ where: { id: secondCandidate.hospitalId } });
+    await call("POST", "/auth/hospital/request-otp", { body: { phoneNumber: secondHospital.phoneNumber } });
+    const lateSession = await call("POST", "/auth/hospital/verify-otp", {
+      body: { phoneNumber: secondHospital.phoneNumber, code: "222222" },
+    });
+    const lateAccept = await call("POST", `/hospital/me/requests/${secondCandidate.id}/respond`, {
+      token: lateSession.data.token,
+      body: { response: "ACCEPTED" },
+    });
+    ok("late real hospital ACCEPT is not an error (fails closed silently)", lateAccept.status === 200);
+  }
+  await lateDb.$disconnect();
   const afterLateAccept = await call("GET", "/ambulance/me/emergency", { token: ambToken });
   ok(
     "late hospital acceptance CANNOT overwrite a locked destination",

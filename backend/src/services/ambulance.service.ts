@@ -22,6 +22,7 @@ import { haversineDistanceKm } from "../utils/haversine";
 import { ambulanceMatchingConfig } from "../config/ambulance-matching.config";
 import { AppError } from "../middleware/error-handler.middleware";
 import type { NearestAmbulanceSelection } from "../types/ambulance.types";
+import { resolveDemoAmbulance } from "./demo-routing.service";
 
 const log = (message: string, meta?: unknown) =>
   console.log(`[ambulance-matching] ${message}`, meta ?? "");
@@ -121,9 +122,16 @@ export async function listAmbulances(available?: boolean) {
  *      emergency update + timeline event).
  *   6. Re-fetch the fully-included emergency and emit events.
  *
+ * @param patientPhoneNumber optional — when it exactly matches the configured
+ *        demo patient phone AND DOCSAHAB_DEMO_MODE is enabled, dispatch is
+ *        forced to the configured demo ambulance instead of nearest-matching.
+ *        See demo-routing.service.ts; every other caller is unaffected.
  * @returns the full emergency (same shape as GET /emergency/:id).
  */
-export async function assignNearestAmbulance(emergencyId: string) {
+export async function assignNearestAmbulance(
+  emergencyId: string,
+  patientPhoneNumber?: string
+) {
   // 1. Load + validate the emergency.
   const emergency = await emergencyRepo.findEmergencyById(emergencyId);
   if (!emergency) {
@@ -157,10 +165,50 @@ export async function assignNearestAmbulance(emergencyId: string) {
     );
   }
 
+  const previousEtaMinutes = emergency.etaMinutes ?? null;
+
+  // ---- Demo routing override (isolated; see demo-routing.service.ts) --------
+  // Checked ONLY here, ONLY for the exact configured demo patient phone, ONLY
+  // when DOCSAHAB_DEMO_MODE is on. Every other caller (patientPhoneNumber
+  // omitted, wrong number, or demo mode off) falls straight through to the
+  // unmodified nearest-ambulance logic below.
+  if (patientPhoneNumber) {
+    const demoAmbulance = await resolveDemoAmbulance(patientPhoneNumber);
+    if (demoAmbulance) {
+      const distanceKm = isValidCoordinate(demoAmbulance.latitude, demoAmbulance.longitude)
+        ? haversineDistanceKm(
+            emergency.patientLatitude,
+            emergency.patientLongitude,
+            demoAmbulance.latitude,
+            demoAmbulance.longitude
+          )
+        : 0; // no real position shared yet — proximity is irrelevant to this forced pairing anyway
+      const etaMinutes = estimateEtaMinutes(distanceKm);
+      try {
+        return await commitAmbulanceAssignment(
+          emergencyId,
+          demoAmbulance,
+          distanceKm,
+          etaMinutes,
+          previousEtaMinutes,
+          { demoRouting: true }
+        );
+      } catch (error) {
+        if (error instanceof AppError && error.code === "AMBULANCE_NO_LONGER_AVAILABLE") {
+          throw new AppError(
+            503,
+            "DEMO_AMBULANCE_NOT_AVAILABLE",
+            `Demo ambulance ${demoAmbulance.vehicleNo} is not ONLINE/available right now — go online on that account before triggering the demo SOS`
+          );
+        }
+        throw error;
+      }
+    }
+  }
+
   // 3-6. Discover → select → atomically commit, with bounded retry. If a
   // concurrent request wins the atomic claim first, we fall back to the
   // next-nearest available unit rather than failing the caller.
-  const previousEtaMinutes = emergency.etaMinutes ?? null;
   let lastConflict: AppError | null = null;
 
   for (let attempt = 1; attempt <= MAX_ASSIGNMENT_ATTEMPTS; attempt++) {
@@ -182,60 +230,19 @@ export async function assignNearestAmbulance(emergencyId: string) {
     }
 
     const { ambulance, distanceKm } = selection;
-    const distanceRounded = Number(distanceKm.toFixed(2));
 
     // 4. ETA.
     const etaMinutes = estimateEtaMinutes(distanceKm);
 
     try {
-      // 5. Atomic commit (ambulance claim + emergency update + timeline event).
-      const { timelineEvent, previousStatus } =
-        await ambulanceRepo.assignAmbulanceAtomically({
-          emergencyId,
-          ambulanceId: ambulance.id,
-          etaMinutes,
-          timelineDescription: `Ambulance ${ambulance.vehicleNo} assigned · ${distanceRounded} km · ETA ${etaMinutes} min`,
-          metadata: {
-            ambulanceId: ambulance.id,
-            vehicleNo: ambulance.vehicleNo,
-            distanceKm: distanceRounded,
-            etaMinutes,
-          },
-        });
-
-      log(
-        `assigned ${ambulance.vehicleNo} (${ambulance.id}) to emergency ${emergencyId}`,
-        { distanceKm: distanceRounded, etaMinutes, attempt }
+      // 5-6. Atomic commit + event emission (shared with the demo path).
+      return await commitAmbulanceAssignment(
+        emergencyId,
+        ambulance,
+        distanceKm,
+        etaMinutes,
+        previousEtaMinutes
       );
-
-      // 6. Re-fetch fully-included emergency and emit events.
-      const fullEmergency = await emergencyRepo.findEmergencyById(emergencyId);
-
-      // Reuse the existing lifecycle event so the Realtime module sees ambulance
-      // assignment through the same `statusChanged` channel as every other status.
-      emergencyEvents.emit("statusChanged", {
-        emergency: fullEmergency,
-        previousStatus,
-        newStatus: EmergencyStatus.AMBULANCE_ASSIGNED,
-        timelineEvent,
-      });
-
-      // Domain-specific events for ambulance-aware consumers.
-      emergencyEvents.emit("ambulanceAssigned", {
-        emergencyId,
-        ambulanceId: ambulance.id,
-        vehicleNo: ambulance.vehicleNo,
-        distanceKm: distanceRounded,
-        etaMinutes,
-        emergency: fullEmergency,
-      });
-      emergencyEvents.emit("etaUpdated", {
-        emergencyId,
-        etaMinutes,
-        previousEtaMinutes,
-      });
-
-      return fullEmergency!;
     } catch (error) {
       // Only a lost atomic claim is retryable — re-select the next-nearest.
       // Everything else (e.g. emergency already assigned) propagates.
@@ -262,4 +269,71 @@ export async function assignNearestAmbulance(emergencyId: string) {
       "Could not assign an ambulance after multiple attempts"
     )
   );
+}
+
+/**
+ * Atomic commit + event emission shared by both the normal nearest-ambulance
+ * path and the demo routing override. Identical downstream behavior either
+ * way — the only difference is how `ambulance` was selected.
+ */
+async function commitAmbulanceAssignment(
+  emergencyId: string,
+  ambulance: Ambulance,
+  distanceKm: number,
+  etaMinutes: number,
+  previousEtaMinutes: number | null,
+  extraMetadata: Record<string, unknown> = {}
+) {
+  const distanceRounded = Number(distanceKm.toFixed(2));
+
+  const { timelineEvent, previousStatus } = await ambulanceRepo.assignAmbulanceAtomically({
+    emergencyId,
+    ambulanceId: ambulance.id,
+    etaMinutes,
+    timelineDescription: extraMetadata.demoRouting
+      ? `[DEMO ROUTING] Ambulance ${ambulance.vehicleNo} force-assigned · ETA ${etaMinutes} min`
+      : `Ambulance ${ambulance.vehicleNo} assigned · ${distanceRounded} km · ETA ${etaMinutes} min`,
+    metadata: {
+      ambulanceId: ambulance.id,
+      vehicleNo: ambulance.vehicleNo,
+      distanceKm: distanceRounded,
+      etaMinutes,
+      ...extraMetadata,
+    },
+  });
+
+  log(`assigned ${ambulance.vehicleNo} (${ambulance.id}) to emergency ${emergencyId}`, {
+    distanceKm: distanceRounded,
+    etaMinutes,
+    ...extraMetadata,
+  });
+
+  // Re-fetch fully-included emergency and emit events.
+  const fullEmergency = await emergencyRepo.findEmergencyById(emergencyId);
+
+  // Reuse the existing lifecycle event so the Realtime module sees ambulance
+  // assignment through the same `statusChanged` channel as every other status.
+  emergencyEvents.emit("statusChanged", {
+    emergency: fullEmergency,
+    previousStatus,
+    newStatus: EmergencyStatus.AMBULANCE_ASSIGNED,
+    timelineEvent,
+  });
+
+  // Domain-specific events for ambulance-aware consumers.
+  emergencyEvents.emit("ambulanceAssigned", {
+    emergencyId,
+    ambulanceId: ambulance.id,
+    vehicleNo: ambulance.vehicleNo,
+    distanceKm: distanceRounded,
+    etaMinutes,
+    emergency: fullEmergency,
+  });
+  emergencyEvents.emit("etaUpdated", {
+    emergencyId,
+    etaMinutes,
+    previousEtaMinutes,
+  });
+
+  return fullEmergency!;
 }

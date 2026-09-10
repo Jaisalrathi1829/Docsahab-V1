@@ -17,6 +17,7 @@ import { requireAuth } from "../middleware/auth.middleware";
 import * as authController from "../controllers/auth.controller";
 import * as patientController from "../controllers/patient.controller";
 import * as crewController from "../controllers/ambulance-crew.controller";
+import * as hospitalConsoleController from "../controllers/hospital-console.controller";
 import {
   requestOtpSchema,
   verifyOtpSchema,
@@ -27,6 +28,11 @@ import {
   locationSchema,
 } from "../validators/auth.validator";
 import { emergencyIdParamSchema } from "../validators/emergency.validator";
+import {
+  candidateIdParamSchema,
+  respondSchema,
+  liveStatusUpdateSchema,
+} from "../validators/hospital-console.validator";
 
 const router = Router();
 
@@ -54,6 +60,17 @@ router.post(
   "/auth/ambulance/verify-otp",
   validate({ body: verifyOtpSchema }),
   authController.verifyAmbulanceOtp
+);
+
+router.post(
+  "/auth/hospital/request-otp",
+  validate({ body: requestOtpSchema }),
+  authController.requestHospitalOtp
+);
+router.post(
+  "/auth/hospital/verify-otp",
+  validate({ body: verifyOtpSchema }),
+  authController.verifyHospitalOtp
 );
 
 router.get("/auth/me", requireAuth(), authController.getCurrentUser);
@@ -180,6 +197,40 @@ router.post(
   "/ambulance/me/emergency/:id/arrived",
   ...crewAction,
   crewController.markArrived
+);
+
+// ---------------------------------------------------------------------------
+// Hospital console — the REAL hospital-decision-engine's client. Every route
+// acts on req.auth!.subjectId (the authenticated hospital), never a
+// client-supplied id.
+// ---------------------------------------------------------------------------
+
+router.get(
+  "/hospital/me/requests",
+  requireAuth(SessionRole.HOSPITAL),
+  hospitalConsoleController.getPendingRequests
+);
+router.post(
+  "/hospital/me/requests/:candidateId/respond",
+  requireAuth(SessionRole.HOSPITAL),
+  validate({ params: candidateIdParamSchema, body: respondSchema }),
+  hospitalConsoleController.respond
+);
+router.get(
+  "/hospital/me/active-case",
+  requireAuth(SessionRole.HOSPITAL),
+  hospitalConsoleController.getActiveCase
+);
+router.get(
+  "/hospital/me/live-status",
+  requireAuth(SessionRole.HOSPITAL),
+  hospitalConsoleController.getLiveStatus
+);
+router.patch(
+  "/hospital/me/live-status",
+  requireAuth(SessionRole.HOSPITAL),
+  validate({ body: liveStatusUpdateSchema }),
+  hospitalConsoleController.updateLiveStatus
 );
 
 export default router;
