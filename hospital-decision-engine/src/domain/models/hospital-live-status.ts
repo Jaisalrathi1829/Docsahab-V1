@@ -51,6 +51,49 @@ export function createHospitalLiveStatus(data: {
   };
 }
 
+export type FreshnessLevel = 'FRESH' | 'STALE' | 'EXPIRED';
+
+export interface FreshnessAssessment {
+  level: FreshnessLevel;
+  ageMs: number;
+  /** True when lastUpdated is further in the future than the allowed skew. */
+  futureDated: boolean;
+}
+
+/**
+ * Classifies a live-status record's freshness, clock-skew aware.
+ *
+ *   ageMs < -maxClockSkewMs   → EXPIRED, futureDated=true  (untrustworthy clock)
+ *   -maxClockSkewMs..freshMs  → FRESH
+ *   freshMs..staleMs          → STALE
+ *   > staleMs                 → EXPIRED
+ *
+ * A record dated further in the future than the tolerated skew is treated as
+ * EXPIRED rather than FRESH: a future timestamp means a broken/malicious clock,
+ * and trusting it would let stale data masquerade as current indefinitely.
+ */
+export function classifyFreshness(
+  lastUpdated: Date,
+  now: Date,
+  freshThresholdMs: number,
+  staleThresholdMs: number,
+  maxClockSkewMs = 0
+): FreshnessAssessment {
+  const ageMs = now.getTime() - lastUpdated.getTime();
+
+  if (ageMs < -maxClockSkewMs) {
+    return { level: 'EXPIRED', ageMs, futureDated: true };
+  }
+  if (ageMs <= freshThresholdMs) return { level: 'FRESH', ageMs, futureDated: false };
+  if (ageMs <= staleThresholdMs) return { level: 'STALE', ageMs, futureDated: false };
+  return { level: 'EXPIRED', ageMs, futureDated: false };
+}
+
+/**
+ * @deprecated Retained for backward compatibility; prefer classifyFreshness,
+ * which is clock-skew aware. This wrapper treats any future timestamp as FRESH
+ * (the old, unsafe behavior) and is no longer used by the ranking engine.
+ */
 export function isStatusFresh(
   status: HospitalLiveStatus,
   now: Date,
@@ -62,5 +105,3 @@ export function isStatusFresh(
   if (ageMs <= staleThresholdMs) return 'STALE';
   return 'EXPIRED';
 }
-
-export type FreshnessLevel = 'FRESH' | 'STALE' | 'EXPIRED';

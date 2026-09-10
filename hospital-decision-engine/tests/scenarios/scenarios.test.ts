@@ -1,170 +1,68 @@
 import {
-  HospitalRankingEngine,
   HospitalSelectionEngine,
-  InMemoryHospitalProfileProvider,
-  InMemoryHospitalLiveStatusProvider,
-  HaversineETAProvider,
   InMemoryClockProvider,
-  createDemoHospitalData,
-  createEmergencyId,
-  createHospitalId,
-  CommonCapabilities,
-  CommonResources,
-  createEmergencyRequirement,
+  InMemorySelectionStateStore,
 } from '../../src/index';
+import { abcdRanked, emergencyId } from '../helpers';
 
-describe('Docsahab Core Decision Engine - Mandatory Reference & Scenarios', () => {
-  test('Mandatory Reference Scenario: #3 -> #2 -> #1 -> #4 acceptance, temporary assignment, pickup lock, late responses rejected', async () => {
+describe('Mandatory Reference Scenario', () => {
+  test('#3 -> #2 -> #1 acceptance with replacement, #4 cannot displace #1, pickup locks #1, late responses rejected', async () => {
     const clock = new InMemoryClockProvider(new Date('2026-09-10T10:00:00Z'));
-    const { profiles, statuses } = createDemoHospitalData(clock.now());
+    const store = new InMemorySelectionStateStore();
+    const engine = new HospitalSelectionEngine(clock, store);
+    const emId = emergencyId('EMG-REF-001');
+    const { A, B, C, D } = abcdRanked();
 
-    for (const status of statuses) {
-      status.traumaDepartmentStatus = 'AVAILABLE';
-      status.emergencyDepartmentStatus = 'AVAILABLE';
-      status.acceptingEmergencyPatients = true;
-    }
+    const snap = await engine.initializeSelection({ emergencyId: emId, rankedHospitals: [A, B, C, D], topN: 4 });
+    const cand = (rank: number) => snap.candidates.find((c) => c.rank === rank)!;
 
-    for (const profile of profiles) {
-      const caps = new Set(profile.capabilities);
-      caps.add(CommonCapabilities.CARDIAC_EMERGENCY);
-      caps.add(CommonCapabilities.TRAUMA);
-      (profile as any).capabilities = caps;
-    }
+    // C (#3) accepts first → temporary assignment
+    const dC = await engine.processResponse({ emergencyId: emId, candidateId: cand(3).candidateId, hospitalId: C.hospitalId, response: 'ACCEPT' });
+    expect(dC.reason.type).toBe('INITIAL_ASSIGNMENT');
+    expect((await engine.getCurrentAssignment(emId))?.hospitalId).toBe(C.hospitalId);
 
-    const profileProvider = new InMemoryHospitalProfileProvider(profiles);
-    const liveStatusProvider = new InMemoryHospitalLiveStatusProvider(statuses);
-    const etaProvider = new HaversineETAProvider(60);
+    // B (#2) accepts → replaces C
+    const dB = await engine.processResponse({ emergencyId: emId, candidateId: cand(2).candidateId, hospitalId: B.hospitalId, response: 'ACCEPT' });
+    expect(dB.replacementOccurred).toBe(true);
+    expect(dB.reason.type).toBe('REPLACEMENT');
+    expect((await engine.getCurrentAssignment(emId))?.hospitalId).toBe(B.hospitalId);
 
-    const rankingEngine = new HospitalRankingEngine(profileProvider, liveStatusProvider, etaProvider, clock);
-    const selectionEngine = new HospitalSelectionEngine(clock);
+    // A (#1) accepts → replaces B
+    const dA = await engine.processResponse({ emergencyId: emId, candidateId: cand(1).candidateId, hospitalId: A.hospitalId, response: 'ACCEPT' });
+    expect(dA.replacementOccurred).toBe(true);
+    expect((await engine.getCurrentAssignment(emId))?.hospitalId).toBe(A.hospitalId);
 
-    const emergencyId = createEmergencyId('EMG-REF-001');
-    const emergency = createEmergencyRequirement({
-      emergencyId,
-      probableEmergencyType: 'TRAUMA_CARDIAC',
-      requiredCapabilities: [
-        { capability: CommonCapabilities.TRAUMA, requirementLevel: 'MANDATORY' },
-        { capability: CommonCapabilities.CARDIAC_EMERGENCY, requirementLevel: 'MANDATORY' },
-      ],
-      requiredResources: [],
-      severity: 'CRITICAL',
-      patientLocation: { latitude: 28.6139, longitude: 77.2090 },
-      ambulanceLocation: { latitude: 28.6000, longitude: 77.1900 },
-    });
+    // D (#4) accepts → must NOT replace A
+    const dD = await engine.processResponse({ emergencyId: emId, candidateId: cand(4).candidateId, hospitalId: D.hospitalId, response: 'ACCEPT' });
+    expect(dD.replacementOccurred).toBe(false);
+    expect(dD.reason.type).toBe('NO_REPLACEMENT_LOWER_RANK');
+    expect((await engine.getCurrentAssignment(emId))?.hospitalId).toBe(A.hospitalId);
 
-    const rankingResult = await rankingEngine.rankHospitals({ emergency });
-    expect(rankingResult.rankedHospitals.length).toBeGreaterThanOrEqual(4);
+    // Pickup → lock A
+    const pickup = await engine.processPickup({ emergencyId: emId, pickedUpAt: clock.now() });
+    expect(pickup.reason.type).toBe('LOCKED_AT_PICKUP');
+    expect(pickup.newAssignment?.state).toBe('LOCKED');
+    expect(await engine.isLocked(emId)).toBe(true);
 
-    const selectionSnapshot = selectionEngine.initializeSelection({
-      emergencyId,
-      rankedHospitals: rankingResult.rankedHospitals,
-      topN: 4,
-    });
-
-    const candidates = selectionSnapshot.candidates;
-    const cand1 = candidates.find(c => c.rank === 1);
-    const cand2 = candidates.find(c => c.rank === 2);
-    const cand3 = candidates.find(c => c.rank === 3);
-    const cand4 = candidates.find(c => c.rank === 4);
-
-    expect(cand1).toBeDefined();
-    expect(cand2).toBeDefined();
-    expect(cand3).toBeDefined();
-    expect(cand4).toBeDefined();
-
-    const decision3 = selectionEngine.processResponse({
-      emergencyId,
-      candidateId: cand3!.candidateId,
-      hospitalId: cand3!.hospitalId,
-      response: 'ACCEPT',
-    });
-    expect(selectionEngine.getCurrentAssignment(emergencyId)?.hospitalId).toBe(cand3!.hospitalId);
-
-    const decision2 = selectionEngine.processResponse({
-      emergencyId,
-      candidateId: cand2!.candidateId,
-      hospitalId: cand2!.hospitalId,
-      response: 'ACCEPT',
-    });
-    expect(decision2.replacementOccurred).toBe(true);
-    expect(selectionEngine.getCurrentAssignment(emergencyId)?.hospitalId).toBe(cand2!.hospitalId);
-
-    const decision1 = selectionEngine.processResponse({
-      emergencyId,
-      candidateId: cand1!.candidateId,
-      hospitalId: cand1!.hospitalId,
-      response: 'ACCEPT',
-    });
-    expect(decision1.replacementOccurred).toBe(true);
-    expect(selectionEngine.getCurrentAssignment(emergencyId)?.hospitalId).toBe(cand1!.hospitalId);
-
-    const decision4 = selectionEngine.processResponse({
-      emergencyId,
-      candidateId: cand4!.candidateId,
-      hospitalId: cand4!.hospitalId,
-      response: 'ACCEPT',
-    });
-    expect(selectionEngine.getCurrentAssignment(emergencyId)?.hospitalId).toBe(cand1!.hospitalId);
-
-    const pickupDecision = selectionEngine.processPickup({
-      emergencyId,
-      pickedUpAt: clock.now(),
-    });
-    expect(pickupDecision.newAssignment?.state).toBe('LOCKED');
-    expect(selectionEngine.isLocked(emergencyId)).toBe(true);
-
-    const lateDecision2 = selectionEngine.processResponse({
-      emergencyId,
-      candidateId: cand2!.candidateId,
-      hospitalId: cand2!.hospitalId,
-      response: 'ACCEPT',
-    });
-    expect(selectionEngine.getCurrentAssignment(emergencyId)?.hospitalId).toBe(cand1!.hospitalId);
-    expect(selectionEngine.isLocked(emergencyId)).toBe(true);
+    // Late acceptances after lock → rejected, assignment unchanged
+    const late = await engine.processResponse({ emergencyId: emId, candidateId: cand(2).candidateId, hospitalId: B.hospitalId, response: 'ACCEPT' });
+    expect(late.lockPreventedReassignment).toBe(true);
+    expect(late.reason.type).toBe('RESPONSE_REJECTED_LOCKED');
+    expect((await engine.getCurrentAssignment(emId))?.hospitalId).toBe(A.hospitalId);
+    expect(await engine.isLocked(emId)).toBe(true);
   });
 
-  test('Live data freshness simulation across emergencies', async () => {
-    const clock = new InMemoryClockProvider(new Date('2026-09-10T12:00:00Z'));
-    const { profiles, statuses } = createDemoHospitalData(clock.now());
-    const profileProvider = new InMemoryHospitalProfileProvider(profiles);
-    const liveStatusProvider = new InMemoryHospitalLiveStatusProvider(statuses);
-    const etaProvider = new HaversineETAProvider(60);
+  test('selection state reaches REASSIGNED after a replacement (no longer dead)', async () => {
+    const clock = new InMemoryClockProvider(new Date('2026-09-10T10:00:00Z'));
+    const engine = new HospitalSelectionEngine(clock, new InMemorySelectionStateStore());
+    const emId = emergencyId('EMG-REASSIGN');
+    const { A, B, C } = abcdRanked();
+    const snap = await engine.initializeSelection({ emergencyId: emId, rankedHospitals: [A, B, C], topN: 3 });
+    const cand = (rank: number) => snap.candidates.find((c) => c.rank === rank)!;
 
-    const rankingEngine = new HospitalRankingEngine(profileProvider, liveStatusProvider, etaProvider, clock);
-
-    const emergency = createEmergencyRequirement({
-      emergencyId: createEmergencyId('EMG-LIVE-001'),
-      probableEmergencyType: 'TRAUMA',
-      requiredCapabilities: [
-        { capability: CommonCapabilities.TRAUMA, requirementLevel: 'MANDATORY' },
-      ],
-      requiredResources: [],
-      severity: 'HIGH',
-      patientLocation: { latitude: 28.6139, longitude: 77.2090 },
-      ambulanceLocation: { latitude: 28.6000, longitude: 77.1900 },
-    });
-
-    const result1 = await rankingEngine.rankHospitals({ emergency });
-    expect(result1.rankedHospitals.length).toBeGreaterThan(0);
-    const topHospital1 = result1.rankedHospitals[0].hospitalId;
-
-    await liveStatusProvider.updateHospitalLiveStatus(topHospital1, {
-      acceptingEmergencyPatients: false,
-    });
-
-    const emergency2 = createEmergencyRequirement({
-      emergencyId: createEmergencyId('EMG-LIVE-002'),
-      probableEmergencyType: 'TRAUMA',
-      requiredCapabilities: [
-        { capability: CommonCapabilities.TRAUMA, requirementLevel: 'MANDATORY' },
-      ],
-      requiredResources: [],
-      severity: 'HIGH',
-      patientLocation: { latitude: 28.6139, longitude: 77.2090 },
-      ambulanceLocation: { latitude: 28.6000, longitude: 77.1900 },
-    });
-
-    const result2 = await rankingEngine.rankHospitals({ emergency: emergency2 });
-    expect(result2.rankedHospitals[0].hospitalId).not.toBe(topHospital1);
+    await engine.processResponse({ emergencyId: emId, candidateId: cand(3).candidateId, hospitalId: C.hospitalId, response: 'ACCEPT' });
+    expect((await engine.getSelectionState(emId))?.state).toBe('TEMPORARILY_ASSIGNED');
+    await engine.processResponse({ emergencyId: emId, candidateId: cand(1).candidateId, hospitalId: A.hospitalId, response: 'ACCEPT' });
+    expect((await engine.getSelectionState(emId))?.state).toBe('REASSIGNED');
   });
 });

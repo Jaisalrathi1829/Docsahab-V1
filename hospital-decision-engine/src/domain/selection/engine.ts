@@ -1,9 +1,30 @@
-import { EmergencyId, HospitalId, createCandidateId } from '../models/types';
+// ============================================================================
+// HospitalSelectionEngine — orchestrator
+// ============================================================================
+// Thin async orchestrator: load versioned state from a SelectionStateStore,
+// run a PURE reducer, then persist via compare-and-set with bounded retry.
+//
+// Concurrency responsibility split (Phase 3):
+//   A. decision determinism      → the reducer (pure)
+//   B. in-process safety         → single reduce+CAS cycle
+//   C. persistent atomicity      → the store's compareAndSwap (Docsahab/Postgres)
+//   D. multi-instance safety     → same CAS, across processes
+//   E. replay / idempotency      → decision.stateChanged gates writes; duplicate
+//                                   and obsolete responses never mutate or write
+//
+// The engine core imports NO infrastructure. The default store is in-memory and
+// labelled TEST/DEV ONLY; production injects a Postgres-backed store.
+// ============================================================================
+
+import { EmergencyId } from '../models/types';
 import { RankedHospital } from '../ranking/engine';
-import { HospitalCandidate, SelectionState, CandidateState, SelectionSnapshot, SelectionDecision, SelectionDecisionReason, createCandidate, canTransition, canCandidateTransition } from './state';
-import { RankingConfiguration, DEFAULT_RANKING_CONFIGURATION } from '../ranking/configuration';
+import { SelectionSnapshot, SelectionDecision, HospitalCandidate } from './state';
+import { RankingConfiguration, DEFAULT_RANKING_CONFIGURATION, mergeConfiguration } from '../ranking/configuration';
 import { ClockProvider } from '../../ports/providers';
+import { SelectionStateStore, VersionedSelection } from '../../ports/selection-state-store';
+import { InMemorySelectionStateStore } from '../../infrastructure/in-memory-selection-store';
 import { SelectionError, SelectionErrorCode } from '../../errors/ranking-errors';
+import { initializeSelection, reduceResponse, reducePickup } from './reducer';
 
 export interface SelectionInput {
   emergencyId: EmergencyId;
@@ -15,7 +36,7 @@ export interface SelectionInput {
 export interface ResponseInput {
   emergencyId: EmergencyId;
   candidateId: string;
-  hospitalId: HospitalId;
+  hospitalId: import('../models/types').HospitalId;
   response: 'ACCEPT' | 'REJECT';
   respondedAt?: Date;
 }
@@ -25,352 +46,139 @@ export interface PickupInput {
   pickedUpAt: Date;
 }
 
+const MAX_CAS_ATTEMPTS = 5;
+
 export class HospitalSelectionEngine {
-  private selectionState: Map<EmergencyId, SelectionSnapshot> = new Map();
-  private clock: ClockProvider;
-  private defaultConfig: RankingConfiguration;
+  private readonly store: SelectionStateStore;
+  private readonly clock: ClockProvider;
+  private readonly defaultConfig: RankingConfiguration;
 
   constructor(
     clock: ClockProvider,
+    store?: SelectionStateStore,
     defaultConfig: RankingConfiguration = DEFAULT_RANKING_CONFIGURATION
   ) {
     this.clock = clock;
+    // TEST/DEV ONLY default. Production MUST inject a durable, transactional store.
+    this.store = store ?? new InMemorySelectionStateStore();
     this.defaultConfig = defaultConfig;
   }
 
-  initializeSelection(input: SelectionInput): SelectionSnapshot {
-    const config = this.mergeConfiguration(input.config);
-    const topN = input.topN ?? config.topN;
+  async initializeSelection(input: SelectionInput): Promise<SelectionSnapshot> {
+    const config = mergeConfiguration(this.defaultConfig, input.config);
     const now = this.clock.now();
-    const expiresAt = new Date(now.getTime() + 5 * 60 * 1000);
-
-    const candidates: HospitalCandidate[] = input.rankedHospitals
-      .slice(0, topN)
-      .map((hospital, index) =>
-        createCandidate(
-          input.emergencyId,
-          hospital.hospitalId,
-          hospital.rank,
-          hospital.finalScore,
-          expiresAt
-        )
-      );
-
-    const snapshot: SelectionSnapshot = {
-      emergencyId: input.emergencyId,
-      state: 'INVITED',
-      candidates,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    this.selectionState.set(input.emergencyId, snapshot);
-    return snapshot;
-  }
-
-  processResponse(input: ResponseInput): SelectionDecision {
-    const snapshot = this.selectionState.get(input.emergencyId);
-    if (!snapshot) {
-      throw new SelectionError(SelectionErrorCode.INVALID_HOSPITAL_RESPONSE, 'No selection state for emergency');
-    }
-
-    if (snapshot.state === 'LOCKED') {
-      const candidate = snapshot.candidates.find(c => c.candidateId === input.candidateId);
-      return {
-        previousAssignment: snapshot.currentAssignment,
-        newAssignment: snapshot.currentAssignment,
-        replacementOccurred: false,
-        lockPreventedReassignment: true,
-        reason: { type: 'RESPONSE_REJECTED_INVALID', candidateId: input.candidateId, reason: 'Assignment locked at pickup' },
-      };
-    }
-
-    const candidateIndex = snapshot.candidates.findIndex(c => c.candidateId === input.candidateId);
-    if (candidateIndex === -1) {
-      throw new SelectionError(SelectionErrorCode.CANDIDATE_NOT_FOUND, 'Candidate not found');
-    }
-
-    const candidate = snapshot.candidates[candidateIndex];
-
-    if (candidate.state !== 'PENDING') {
-      if (candidate.state === 'ACCEPTED' && input.response === 'ACCEPT') {
-        return {
-          previousAssignment: snapshot.currentAssignment,
-          newAssignment: snapshot.currentAssignment,
-          replacementOccurred: false,
-          lockPreventedReassignment: false,
-          reason: { type: 'RESPONSE_REJECTED_DUPLICATE', candidateId: input.candidateId },
-        };
-      }
-      if (candidate.state === 'SUPERSEDED' || candidate.state === 'EXPIRED') {
-        return {
-          previousAssignment: snapshot.currentAssignment,
-          newAssignment: snapshot.currentAssignment,
-          replacementOccurred: false,
-          lockPreventedReassignment: false,
-          reason: { type: 'RESPONSE_REJECTED_OBSOLETE', candidateId: input.candidateId },
-        };
-      }
-      if (candidate.state === 'REJECTED') {
-        return {
-          previousAssignment: snapshot.currentAssignment,
-          newAssignment: snapshot.currentAssignment,
-          replacementOccurred: false,
-          lockPreventedReassignment: false,
-          reason: { type: 'RESPONSE_REJECTED_DUPLICATE', candidateId: input.candidateId },
-        };
-      }
-    }
-
-    const respondedAt = input.respondedAt ?? this.clock.now();
-
-    if (input.response === 'ACCEPT') {
-      return this.handleAcceptance(snapshot, candidate, candidateIndex, respondedAt);
-    } else {
-      return this.handleRejection(snapshot, candidate, candidateIndex, respondedAt);
-    }
-  }
-
-  private handleAcceptance(
-    snapshot: SelectionSnapshot,
-    candidate: HospitalCandidate,
-    candidateIndex: number,
-    respondedAt: Date
-  ): SelectionDecision {
-    const previousAssignment = snapshot.currentAssignment;
-
-    if (!canCandidateTransition(candidate.state, 'ACCEPTED')) {
-      return {
-        previousAssignment,
-        newAssignment: previousAssignment,
-        replacementOccurred: false,
-        lockPreventedReassignment: false,
-        reason: { type: 'RESPONSE_REJECTED_INVALID', candidateId: candidate.candidateId, reason: 'Invalid state transition' },
-      };
-    }
-
-    const updatedCandidates = [...snapshot.candidates];
-    updatedCandidates[candidateIndex] = {
-      ...candidate,
-      state: 'ACCEPTED',
-      respondedAt,
-      response: { type: 'ACCEPT', acceptedAt: respondedAt },
-    };
-
-    if (previousAssignment && previousAssignment.rank <= candidate.rank) {
-      updatedCandidates[candidateIndex] = {
-        ...updatedCandidates[candidateIndex],
-        state: 'SUPERSEDED',
-      };
-
-      const newSnapshot: SelectionSnapshot = {
-        ...snapshot,
-        candidates: updatedCandidates,
-        updatedAt: respondedAt,
-      };
-
-      this.selectionState.set(snapshot.emergencyId, newSnapshot);
-
-      return {
-        previousAssignment,
-        newAssignment: previousAssignment,
-        replacementOccurred: false,
-        lockPreventedReassignment: false,
-        reason: {
-          type: 'NO_REPLACEMENT_LOWER_RANK',
-          candidate,
-          currentAssignment: previousAssignment,
-        },
-      };
-    }
-
-    if (previousAssignment) {
-      const prevIndex = updatedCandidates.findIndex(c => c.candidateId === previousAssignment.candidateId);
-      if (prevIndex !== -1 && canCandidateTransition(updatedCandidates[prevIndex].state, 'SUPERSEDED')) {
-        updatedCandidates[prevIndex] = {
-          ...updatedCandidates[prevIndex],
-          state: 'SUPERSEDED',
-        };
-      }
-    }
-
-    const newSnapshot: SelectionSnapshot = {
-      ...snapshot,
-      state: 'TEMPORARILY_ASSIGNED',
-      candidates: updatedCandidates,
-      currentAssignment: updatedCandidates[candidateIndex],
-      updatedAt: respondedAt,
-    };
-
-    this.selectionState.set(snapshot.emergencyId, newSnapshot);
-
-    if (previousAssignment) {
-      return {
-        previousAssignment,
-        newAssignment: updatedCandidates[candidateIndex],
-        replacementOccurred: true,
-        lockPreventedReassignment: false,
-        reason: {
-          type: 'REPLACEMENT',
-          betterCandidate: updatedCandidates[candidateIndex],
-          previousCandidate: previousAssignment,
-        },
-      };
-    }
-
-    return {
-      previousAssignment: undefined,
-      newAssignment: updatedCandidates[candidateIndex],
-      replacementOccurred: false,
-      lockPreventedReassignment: false,
-      reason: {
-        type: 'INITIAL_ASSIGNMENT',
-        candidate: updatedCandidates[candidateIndex],
+    const snapshot = initializeSelection(
+      {
+        emergencyId: input.emergencyId,
+        rankedHospitals: input.rankedHospitals,
+        topN: input.topN ?? config.topN,
+        invitationTtlMs: config.invitationTtlMs,
       },
-    };
-  }
-
-  private handleRejection(
-    snapshot: SelectionSnapshot,
-    candidate: HospitalCandidate,
-    candidateIndex: number,
-    respondedAt: Date
-  ): SelectionDecision {
-    if (!canCandidateTransition(candidate.state, 'REJECTED')) {
-      return {
-        previousAssignment: snapshot.currentAssignment,
-        newAssignment: snapshot.currentAssignment,
-        replacementOccurred: false,
-        lockPreventedReassignment: false,
-        reason: { type: 'RESPONSE_REJECTED_INVALID', candidateId: candidate.candidateId, reason: 'Invalid state transition' },
-      };
-    }
-
-    const updatedCandidates = [...snapshot.candidates];
-    updatedCandidates[candidateIndex] = {
-      ...candidate,
-      state: 'REJECTED',
-      respondedAt,
-      response: { type: 'REJECT', rejectedAt: respondedAt },
-    };
-
-    const hasAcceptedCandidates = updatedCandidates.some(c => c.state === 'ACCEPTED');
-    const newState: SelectionState = hasAcceptedCandidates 
-      ? (snapshot.state === 'INVITED' ? 'INVITED' : snapshot.state)
-      : 'EXHAUSTED';
-
-    const newSnapshot: SelectionSnapshot = {
-      ...snapshot,
-      state: newState,
-      candidates: updatedCandidates,
-      updatedAt: respondedAt,
-    };
-
-    this.selectionState.set(snapshot.emergencyId, newSnapshot);
-
-    return {
-      previousAssignment: snapshot.currentAssignment,
-      newAssignment: snapshot.currentAssignment,
-      replacementOccurred: false,
-      lockPreventedReassignment: false,
-      reason: { type: 'NO_REPLACEMENT_LOWER_RANK', candidate, currentAssignment: snapshot.currentAssignment! },
-    };
-  }
-
-  processPickup(input: PickupInput): SelectionDecision {
-    const snapshot = this.selectionState.get(input.emergencyId);
-    if (!snapshot) {
-      throw new SelectionError(SelectionErrorCode.INVALID_HOSPITAL_RESPONSE, 'No selection state for emergency');
-    }
-
-    if (snapshot.state === 'LOCKED') {
-      return {
-        previousAssignment: snapshot.currentAssignment,
-        newAssignment: snapshot.currentAssignment,
-        replacementOccurred: false,
-        lockPreventedReassignment: true,
-        reason: { type: 'RESPONSE_REJECTED_INVALID', candidateId: '', reason: 'Already locked' },
-      };
-    }
-
-    if (!snapshot.currentAssignment) {
-      const newSnapshot: SelectionSnapshot = {
-        ...snapshot,
-        state: 'EXHAUSTED',
-        lockedAt: input.pickedUpAt,
-        updatedAt: input.pickedUpAt,
-      };
-      this.selectionState.set(input.emergencyId, newSnapshot);
-
-      return {
-        previousAssignment: undefined,
-        newAssignment: undefined,
-        replacementOccurred: false,
-        lockPreventedReassignment: false,
-        reason: { type: 'NO_ELIGIBLE_CANDIDATES' },
-      };
-    }
-
-    const assignment = snapshot.currentAssignment;
-    const updatedCandidates = snapshot.candidates.map(c =>
-      c.candidateId === assignment.candidateId
-        ? { ...c, state: 'LOCKED' as CandidateState }
-        : c
+      now
     );
-
-    const newSnapshot: SelectionSnapshot = {
-      ...snapshot,
-      state: 'LOCKED',
-      candidates: updatedCandidates,
-      currentAssignment: { ...assignment, state: 'LOCKED' as CandidateState },
-      lockedAt: input.pickedUpAt,
-      updatedAt: input.pickedUpAt,
-    };
-
-    this.selectionState.set(input.emergencyId, newSnapshot);
-
-    return {
-      previousAssignment: assignment,
-      newAssignment: { ...assignment, state: 'LOCKED' as CandidateState },
-      replacementOccurred: false,
-      lockPreventedReassignment: false,
-      reason: { type: 'LOCKED_AT_PICKUP', candidate: assignment },
-    };
+    try {
+      const versioned = await this.store.create(snapshot);
+      return versioned.snapshot;
+    } catch (e) {
+      if (e instanceof SelectionError) throw e;
+      throw new SelectionError(
+        SelectionErrorCode.PERSISTENCE_FAILURE,
+        `Failed to initialize selection: ${(e as Error).message}`,
+        true
+      );
+    }
   }
 
-  getSelectionState(emergencyId: EmergencyId): SelectionSnapshot | undefined {
-    return this.selectionState.get(emergencyId);
+  async processResponse(input: ResponseInput): Promise<SelectionDecision> {
+    const respondedAt = input.respondedAt ?? this.clock.now();
+    return this.mutate(input.emergencyId, (snapshot) =>
+      reduceResponse(
+        snapshot,
+        {
+          emergencyId: input.emergencyId,
+          candidateId: input.candidateId,
+          hospitalId: input.hospitalId,
+          response: input.response,
+          respondedAt,
+        },
+        this.clock.now()
+      )
+    );
   }
 
-  getCurrentAssignment(emergencyId: EmergencyId): HospitalCandidate | undefined {
-    return this.selectionState.get(emergencyId)?.currentAssignment;
+  async processPickup(input: PickupInput): Promise<SelectionDecision> {
+    return this.mutate(input.emergencyId, (snapshot) => reducePickup(snapshot, input.pickedUpAt));
   }
 
-  isLocked(emergencyId: EmergencyId): boolean {
-    return this.selectionState.get(emergencyId)?.state === 'LOCKED';
+  async getSelectionState(emergencyId: EmergencyId): Promise<SelectionSnapshot | undefined> {
+    const loaded = await this.store.load(emergencyId);
+    return loaded?.snapshot;
   }
 
-  private mergeConfiguration(override?: Partial<RankingConfiguration>): RankingConfiguration {
-    if (!override) return this.defaultConfig;
-    return {
-      ...this.defaultConfig,
-      ...override,
-      freshnessThresholds: {
-        ...this.defaultConfig.freshnessThresholds,
-        ...override.freshnessThresholds,
-      },
-      tieBreakPolicy: {
-        ...this.defaultConfig.tieBreakPolicy,
-        ...override.tieBreakPolicy,
-      },
-      capabilityPolicy: {
-        ...this.defaultConfig.capabilityPolicy,
-        ...override.capabilityPolicy,
-      },
-      resourcePolicy: {
-        ...this.defaultConfig.resourcePolicy,
-        ...override.resourcePolicy,
-      },
-    };
+  async getCurrentAssignment(emergencyId: EmergencyId): Promise<HospitalCandidate | undefined> {
+    const loaded = await this.store.load(emergencyId);
+    return loaded?.snapshot.currentAssignment;
+  }
+
+  async isLocked(emergencyId: EmergencyId): Promise<boolean> {
+    const loaded = await this.store.load(emergencyId);
+    return loaded?.snapshot.state === 'LOCKED';
+  }
+
+  /**
+   * load → reduce → compare-and-set with bounded retry. A no-op decision
+   * (stateChanged === false) short-circuits without a write, so duplicate and
+   * obsolete responses are naturally idempotent even under retries.
+   */
+  private async mutate(
+    emergencyId: EmergencyId,
+    reducer: (snapshot: SelectionSnapshot) => { snapshot: SelectionSnapshot; decision: SelectionDecision }
+  ): Promise<SelectionDecision> {
+    for (let attempt = 1; attempt <= MAX_CAS_ATTEMPTS; attempt++) {
+      let loaded: VersionedSelection | null;
+      try {
+        loaded = await this.store.load(emergencyId);
+      } catch (e) {
+        throw new SelectionError(
+          SelectionErrorCode.PERSISTENCE_FAILURE,
+          `Store.load failed: ${(e as Error).message}`,
+          true
+        );
+      }
+
+      if (!loaded) {
+        throw new SelectionError(
+          SelectionErrorCode.NO_SELECTION_STATE,
+          `No selection state for emergency ${emergencyId} — initialize first`,
+          false
+        );
+      }
+
+      const { snapshot: next, decision } = reducer(loaded.snapshot);
+
+      if (!decision.stateChanged) {
+        return decision; // pure no-op — never writes, always safe to replay
+      }
+
+      let cas;
+      try {
+        cas = await this.store.compareAndSwap(emergencyId, loaded.version, next);
+      } catch (e) {
+        throw new SelectionError(
+          SelectionErrorCode.PERSISTENCE_FAILURE,
+          `Store.compareAndSwap failed: ${(e as Error).message}`,
+          true
+        );
+      }
+
+      if (cas.ok) return decision;
+      // Lost the race — another writer advanced the version. Re-load and re-reduce.
+    }
+
+    throw new SelectionError(
+      SelectionErrorCode.PERSISTENCE_CONFLICT_EXHAUSTED,
+      `Selection compare-and-set exhausted ${MAX_CAS_ATTEMPTS} attempts for ${emergencyId}`,
+      true
+    );
   }
 }

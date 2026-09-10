@@ -1,11 +1,16 @@
-import { HospitalId, EmergencyId, Capability, ResourceType, createEmergencyId, createHospitalId } from '../models/types';
+import { HospitalId, EmergencyId } from '../models/types';
 import { HospitalProfile } from '../models/hospital-profile';
-import { HospitalLiveStatus } from '../models/hospital-live-status';
+import { HospitalLiveStatus, FreshnessLevel } from '../models/hospital-live-status';
 import { HospitalSnapshot } from '../models/hospital-snapshot';
 import { EmergencyRequirement } from '../models/emergency-requirement';
-import { RankingConfiguration, DEFAULT_RANKING_CONFIGURATION, validateConfiguration } from './configuration';
+import {
+  RankingConfiguration,
+  DEFAULT_RANKING_CONFIGURATION,
+  validateConfiguration,
+  mergeConfiguration,
+} from './configuration';
 import { createHospitalSnapshot, SnapshotInputs, ETAResult } from './snapshot';
-import { calculateFactorScores, calculateFinalScore, FactorScores, ScoredHospital } from './scoring';
+import { calculateFactorScores, calculateFinalScore, FactorScores } from './scoring';
 import { ClockProvider, ETAProvider, HospitalProfileProvider, HospitalLiveStatusProvider } from '../../ports/providers';
 import { RankingError, RankingErrorCode } from '../../errors/ranking-errors';
 
@@ -15,13 +20,24 @@ export interface RankingInput {
   config?: Partial<RankingConfiguration>;
 }
 
+export interface ExcludedHospital {
+  hospitalId: HospitalId;
+  reasons: ReadonlyArray<{ type: string; details?: Record<string, unknown> }>;
+  freshness?: FreshnessLevel;
+}
+
 export interface RankingResult {
   emergencyId: EmergencyId;
   rankedHospitals: ReadonlyArray<RankedHospital>;
+  /** Every hospital considered but not eligible, with structured reasons. */
+  excludedHospitals: ReadonlyArray<ExcludedHospital>;
   configurationVersion: string;
   rankedAt: Date;
   eligibleCount: number;
+  excludedCount: number;
   totalConsidered: number;
+  /** Explicit, deterministic signal for the no-eligible-hospital case (Phase 6). */
+  noEligibleHospitals: boolean;
 }
 
 export interface RankedHospital {
@@ -29,21 +45,16 @@ export interface RankedHospital {
   rank: number;
   finalScore: number;
   factorScores: FactorScores;
-  normalizedFactors: {
-    capability: number;
-    eta: number;
-    resource: number;
-  };
+  normalizedFactors: { capability: number; eta: number; resource: number };
   distanceKm?: number;
   etaSeconds?: number;
   eligibility: {
     eligible: boolean;
-    reasons: ReadonlyArray<{
-      type: string;
-      details?: Record<string, unknown>;
-    }>;
+    reasons: ReadonlyArray<{ type: string; details?: Record<string, unknown> }>;
   };
-  freshness: 'FRESH' | 'STALE' | 'EXPIRED';
+  freshness: FreshnessLevel;
+  usedStaleData: boolean;
+  confidenceMultiplier: number;
   lastUpdated: Date;
   snapshotAt: Date;
   capabilityMatch: {
@@ -66,32 +77,28 @@ export interface RankedHospital {
   rankingReasons: ReadonlyArray<string>;
 }
 
-export class HospitalRankingEngine {
-  private profileProvider: HospitalProfileProvider;
-  private liveStatusProvider: HospitalLiveStatusProvider;
-  private etaProvider: ETAProvider;
-  private clock: ClockProvider;
-  private defaultConfig: RankingConfiguration;
+type ScoredEntry = {
+  hospitalId: HospitalId;
+  snapshot: HospitalSnapshot;
+  factorScores: FactorScores;
+  finalScore: number;
+  etaResult?: ETAResult;
+};
 
+export class HospitalRankingEngine {
   constructor(
-    profileProvider: HospitalProfileProvider,
-    liveStatusProvider: HospitalLiveStatusProvider,
-    etaProvider: ETAProvider,
-    clock: ClockProvider,
-    defaultConfig: RankingConfiguration = DEFAULT_RANKING_CONFIGURATION
-  ) {
-    this.profileProvider = profileProvider;
-    this.liveStatusProvider = liveStatusProvider;
-    this.etaProvider = etaProvider;
-    this.clock = clock;
-    this.defaultConfig = defaultConfig;
-  }
+    private readonly profileProvider: HospitalProfileProvider,
+    private readonly liveStatusProvider: HospitalLiveStatusProvider,
+    private readonly etaProvider: ETAProvider,
+    private readonly clock: ClockProvider,
+    private readonly defaultConfig: RankingConfiguration = DEFAULT_RANKING_CONFIGURATION
+  ) {}
 
   async rankHospitals(input: RankingInput): Promise<RankingResult> {
-    const config = this.mergeConfiguration(input.config);
+    const config = mergeConfiguration(this.defaultConfig, input.config);
     const validation = validateConfiguration(config);
     if (!validation.valid) {
-      throw new RankingError(RankingErrorCode.INVALID_CONFIGURATION, validation.errors.join('; '));
+      throw new RankingError(RankingErrorCode.INVALID_CONFIGURATION, validation.errors.join('; '), false);
     }
 
     const now = this.clock.now();
@@ -100,49 +107,88 @@ export class HospitalRankingEngine {
     const profiles = await this.getProfiles(input.hospitalIds);
     const liveStatuses = await this.getLiveStatuses(input.hospitalIds);
 
-    const snapshots: Map<HospitalId, HospitalSnapshot> = new Map();
-    const etaResults: Map<HospitalId, ETAResult> = new Map();
+    const scored: ScoredEntry[] = [];
+    const excluded: ExcludedHospital[] = [];
 
     for (const [hospitalId, profile] of profiles) {
       const liveStatus = liveStatuses.get(hospitalId);
+
+      // P1-7: a hospital with a profile but no live status is NOT silently
+      // dropped — it is reported as considered-and-excluded with a reason.
       if (!liveStatus) {
+        excluded.push({ hospitalId, reasons: [{ type: 'MISSING_LIVE_STATUS' }] });
         continue;
       }
 
+      // Per-hospital ETA. A failure excludes THIS hospital (recorded), it never
+      // aborts the whole ranking and never becomes favorable data.
       const etaResult = await this.getETA(emergency.ambulanceLocation, profile.location);
-      if (etaResult) {
-        etaResults.set(hospitalId, etaResult);
-      }
 
       const snapshotInputs: SnapshotInputs = {
         profile,
         liveStatus,
         emergency,
-        etaResult: etaResult ?? null,
+        etaResult,
         now,
         config,
       };
-
       const snapshot = createHospitalSnapshot(snapshotInputs);
-      snapshots.set(hospitalId, snapshot);
+
+      const factorScores = calculateFactorScores(
+        snapshot.derived.capabilityMatch,
+        snapshot.derived.resourceAvailability,
+        snapshot.derived.etaSeconds,
+        snapshot.derived.distanceKm,
+        config,
+        snapshot.derived.confidenceMultiplier
+      );
+      const finalScore = calculateFinalScore(factorScores, config);
+
+      const entry: ScoredEntry = {
+        hospitalId,
+        snapshot,
+        factorScores,
+        finalScore,
+        etaResult: etaResult ?? undefined,
+      };
+
+      if (snapshot.derived.eligibility.eligible) {
+        scored.push(entry);
+      } else {
+        excluded.push({
+          hospitalId,
+          freshness: snapshot.freshness,
+          reasons: snapshot.derived.eligibility.reasons.map((r) => ({ type: r.type, details: r as unknown as Record<string, unknown> })),
+        });
+      }
     }
 
-    const scoredHospitals = this.scoreHospitals(snapshots, etaResults, config);
-    const eligibleHospitals = scoredHospitals.filter(h => h.snapshot.derived.eligibility.eligible);
-    const rankedHospitals = this.rankHospitalsList(eligibleHospitals, config);
+    const rankedHospitals = this.rankScored(scored, config);
 
     return {
       emergencyId: emergency.emergencyId,
       rankedHospitals,
+      excludedHospitals: excluded,
       configurationVersion: config.configurationVersion,
       rankedAt: now,
-      eligibleCount: eligibleHospitals.length,
-      totalConsidered: snapshots.size,
+      eligibleCount: rankedHospitals.length,
+      excludedCount: excluded.length,
+      totalConsidered: profiles.size,
+      noEligibleHospitals: rankedHospitals.length === 0,
     };
   }
 
   private async getProfiles(hospitalIds?: ReadonlyArray<HospitalId>): Promise<Map<HospitalId, HospitalProfile>> {
-    const all = await this.profileProvider.getAllHospitalProfiles();
+    let all: ReadonlyMap<HospitalId, HospitalProfile>;
+    try {
+      all = await this.profileProvider.getAllHospitalProfiles();
+    } catch (e) {
+      throw new RankingError(
+        RankingErrorCode.PROFILE_PROVIDER_FAILURE,
+        `HospitalProfileProvider failed: ${(e as Error).message}`,
+        true
+      );
+    }
     const profiles = new Map<HospitalId, HospitalProfile>(all);
     if (hospitalIds && hospitalIds.length > 0) {
       const filtered = new Map<HospitalId, HospitalProfile>();
@@ -156,7 +202,16 @@ export class HospitalRankingEngine {
   }
 
   private async getLiveStatuses(hospitalIds?: ReadonlyArray<HospitalId>): Promise<Map<HospitalId, HospitalLiveStatus>> {
-    const all = await this.liveStatusProvider.getAllHospitalLiveStatuses();
+    let all: ReadonlyMap<HospitalId, HospitalLiveStatus>;
+    try {
+      all = await this.liveStatusProvider.getAllHospitalLiveStatuses();
+    } catch (e) {
+      throw new RankingError(
+        RankingErrorCode.LIVE_STATUS_PROVIDER_FAILURE,
+        `HospitalLiveStatusProvider failed: ${(e as Error).message}`,
+        true
+      );
+    }
     const statuses = new Map<HospitalId, HospitalLiveStatus>(all);
     if (hospitalIds && hospitalIds.length > 0) {
       const filtered = new Map<HospitalId, HospitalLiveStatus>();
@@ -169,54 +224,21 @@ export class HospitalRankingEngine {
     return statuses;
   }
 
-  private async getETA(origin: { latitude: number; longitude: number }, destination: { latitude: number; longitude: number }): Promise<ETAResult | null> {
+  private async getETA(
+    origin: { latitude: number; longitude: number },
+    destination: { latitude: number; longitude: number }
+  ): Promise<ETAResult | null> {
     try {
       return await this.etaProvider.calculateETA(origin, destination);
     } catch {
+      // Recorded downstream as ETA_UNAVAILABLE (exclusion), never as favorable data.
       return null;
     }
   }
 
-  private scoreHospitals(
-    snapshots: Map<HospitalId, HospitalSnapshot>,
-    etaResults: Map<HospitalId, ETAResult>,
-    config: RankingConfiguration
-  ): ReadonlyArray<{ hospitalId: HospitalId; snapshot: HospitalSnapshot; factorScores: FactorScores; finalScore: number; etaResult?: ETAResult }> {
-    const scored: Array<{ hospitalId: HospitalId; snapshot: HospitalSnapshot; factorScores: FactorScores; finalScore: number; etaResult?: ETAResult }> = [];
-
-    for (const [hospitalId, snapshot] of snapshots) {
-      const etaResult = etaResults.get(hospitalId);
-      
-      const factorScores = calculateFactorScores(
-        snapshot.derived.capabilityMatch,
-        snapshot.derived.resourceAvailability,
-        etaResult?.etaSeconds,
-        etaResult?.distanceKm,
-        config
-      );
-
-      const finalScore = calculateFinalScore(factorScores, config);
-
-      scored.push({
-        hospitalId,
-        snapshot,
-        factorScores,
-        finalScore,
-        etaResult: etaResult ?? undefined,
-      });
-    }
-
-    return scored;
-  }
-
-  private rankHospitalsList(
-    hospitals: ReadonlyArray<{ hospitalId: HospitalId; snapshot: HospitalSnapshot; factorScores: FactorScores; finalScore: number; etaResult?: ETAResult }>,
-    config: RankingConfiguration
-  ): ReadonlyArray<RankedHospital> {
-    const sorted = [...hospitals].sort((a, b) => {
-      if (b.finalScore !== a.finalScore) {
-        return b.finalScore - a.finalScore;
-      }
+  private rankScored(scored: ReadonlyArray<ScoredEntry>, config: RankingConfiguration): ReadonlyArray<RankedHospital> {
+    const sorted = [...scored].sort((a, b) => {
+      if (b.finalScore !== a.finalScore) return b.finalScore - a.finalScore;
       return this.tieBreak(a, b, config);
     });
 
@@ -230,13 +252,15 @@ export class HospitalRankingEngine {
         eta: h.factorScores.etaScore,
         resource: h.factorScores.resourceScore,
       },
-      distanceKm: h.etaResult?.distanceKm,
-      etaSeconds: h.etaResult?.etaSeconds,
+      distanceKm: h.snapshot.derived.distanceKm,
+      etaSeconds: h.snapshot.derived.etaSeconds,
       eligibility: {
         eligible: h.snapshot.derived.eligibility.eligible,
-        reasons: h.snapshot.derived.eligibility.reasons.map(r => ({ type: r.type, details: r as any })),
+        reasons: h.snapshot.derived.eligibility.reasons.map((r) => ({ type: r.type, details: r as unknown as Record<string, unknown> })),
       },
       freshness: h.snapshot.freshness,
+      usedStaleData: h.snapshot.derived.usedStaleData,
+      confidenceMultiplier: h.snapshot.derived.confidenceMultiplier,
       lastUpdated: h.snapshot.liveStatus.lastUpdated,
       snapshotAt: h.snapshot.snapshotAt,
       capabilityMatch: {
@@ -256,88 +280,46 @@ export class HospitalRankingEngine {
           percentage: avail.percentage,
         })),
       },
-      rankingReasons: this.generateRankingReasons(h.snapshot, h.factorScores, h.etaResult),
+      rankingReasons: this.generateRankingReasons(h.snapshot, h.etaResult),
     }));
   }
 
-  private tieBreak(
-    a: { hospitalId: HospitalId; snapshot: HospitalSnapshot; factorScores: FactorScores; finalScore: number; etaResult?: ETAResult },
-    b: { hospitalId: HospitalId; snapshot: HospitalSnapshot; factorScores: FactorScores; finalScore: number; etaResult?: ETAResult },
-    config: RankingConfiguration
-  ): number {
-    const policy = config.tieBreakPolicy.strategy;
-    
-    if (policy === 'CAPABILITY_THEN_ETA_THEN_RESOURCE_THEN_ID') {
+  private tieBreak(a: ScoredEntry, b: ScoredEntry, config: RankingConfiguration): number {
+    if (config.tieBreakPolicy.strategy === 'CAPABILITY_THEN_ETA_THEN_RESOURCE_THEN_ID') {
       if (b.factorScores.capabilityScore !== a.factorScores.capabilityScore) {
         return b.factorScores.capabilityScore - a.factorScores.capabilityScore;
       }
-      const aEta = a.factorScores.etaScore;
-      const bEta = b.factorScores.etaScore;
-      if (bEta !== aEta) {
-        return bEta - aEta;
+      if (b.factorScores.etaScore !== a.factorScores.etaScore) {
+        return b.factorScores.etaScore - a.factorScores.etaScore;
       }
       if (b.factorScores.resourceScore !== a.factorScores.resourceScore) {
         return b.factorScores.resourceScore - a.factorScores.resourceScore;
       }
-      return a.hospitalId.localeCompare(b.hospitalId);
+      return a.hospitalId.toString().localeCompare(b.hospitalId.toString());
     }
-
-    return a.hospitalId.localeCompare(b.hospitalId);
+    return a.hospitalId.toString().localeCompare(b.hospitalId.toString());
   }
 
-  private generateRankingReasons(
-    snapshot: HospitalSnapshot,
-    factorScores: FactorScores,
-    etaResult?: ETAResult
-  ): ReadonlyArray<string> {
+  private generateRankingReasons(snapshot: HospitalSnapshot, etaResult?: ETAResult): ReadonlyArray<string> {
     const reasons: string[] = [];
-
     if (snapshot.derived.capabilityMatch.mandatoryMissing.size === 0) {
       reasons.push('All mandatory capabilities available');
     }
-
     if (snapshot.derived.capabilityMatch.preferredMissing.size === 0) {
       reasons.push('All preferred capabilities available');
-    } else if (snapshot.derived.capabilityMatch.preferredMissing.size > 0) {
+    } else {
       reasons.push(`${snapshot.derived.capabilityMatch.preferredMissing.size} preferred capabilities missing`);
     }
-
-    if (etaResult) {
+    if (etaResult && Number.isFinite(etaResult.etaSeconds)) {
       reasons.push(`ETA: ${Math.round(etaResult.etaSeconds / 60)} minutes`);
     }
-
-    if (snapshot.derived.resourceAvailability.overallScore > 0.8) {
-      reasons.push('Strong resource availability');
-    } else if (snapshot.derived.resourceAvailability.overallScore > 0.5) {
-      reasons.push('Moderate resource availability');
-    } else {
-      reasons.push('Limited resource availability');
+    if (snapshot.derived.usedStaleData) {
+      reasons.push(`Live data STALE — resource confidence reduced to ${Math.round(snapshot.derived.confidenceMultiplier * 100)}%`);
     }
-
+    const rScore = snapshot.derived.resourceAvailability.overallScore;
+    if (rScore > 0.8) reasons.push('Strong resource availability');
+    else if (rScore > 0.5) reasons.push('Moderate resource availability');
+    else reasons.push('Limited resource availability');
     return reasons;
-  }
-
-  private mergeConfiguration(override?: Partial<RankingConfiguration>): RankingConfiguration {
-    if (!override) return this.defaultConfig;
-    return {
-      ...this.defaultConfig,
-      ...override,
-      freshnessThresholds: {
-        ...this.defaultConfig.freshnessThresholds,
-        ...override.freshnessThresholds,
-      },
-      tieBreakPolicy: {
-        ...this.defaultConfig.tieBreakPolicy,
-        ...override.tieBreakPolicy,
-      },
-      capabilityPolicy: {
-        ...this.defaultConfig.capabilityPolicy,
-        ...override.capabilityPolicy,
-      },
-      resourcePolicy: {
-        ...this.defaultConfig.resourcePolicy,
-        ...override.resourcePolicy,
-      },
-    };
   }
 }

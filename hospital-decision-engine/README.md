@@ -1,39 +1,64 @@
-# Docsahab Core Hospital Decision Engine
+# Docsahab Core Hospital Decision Engine (v2.0.0)
 
-A standalone, deterministic, explainable, strongly typed, modular, testable, concurrency-safe, data-freshness-aware TypeScript decision engine for hospital emergency coordination in Docsahab.
+A standalone, deterministic, explainable, **persistence-ready** TypeScript decision
+engine that filters, ranks, and selects hospitals during emergency medical
+coordination. Zero runtime dependencies. No AI/ML. No fallback. No framework or
+database coupling in the core.
 
-## What It Is
-An operational decision subsystem responsible for filtering, ranking, selecting, and managing hospital assignments during emergency medical progression.
-
-## What It Is Not
-- Not an ambulance booking app
-- Not a hospital directory
-- Not an AI/ML/LLM model
-- Not a clinical diagnosis engine
-- Not persistence-bound or HTTP framework-bound
+## What it is / is not
+- **Is:** a pure decision core (eligibility → freshness → hard filter → fresh ETA →
+  score → rank → invite → accept → replace-if-better → pickup lock) plus an async
+  orchestrator over injectable ports.
+- **Is not:** a persistence layer, an HTTP server, a hospital directory, a clinical
+  diagnosis engine, or an AI model.
 
 ## Architecture
-- **Domain Core**: Pure domain models, rules, policies, ranking calculation, and selection state machine (free of infrastructure and HTTP frameworks).
-- **Ports (Interfaces)**: Abstractions for HospitalProfileProvider, HospitalLiveStatusProvider, ETAProvider, InvitationDispatcher, and ClockProvider.
-- **Infrastructure (In-Memory)**: Reference implementations for testing and local simulation.
+- **Ranking** (`domain/ranking/*`): pure snapshot + scoring + deterministic sort.
+- **Selection** (`domain/selection/*`): a **pure reducer** (`reducer.ts`) and an
+  **orchestrator** (`engine.ts`) that persists via a `SelectionStateStore` port
+  with optimistic compare-and-set.
+- **Ports** (`ports/*`): `HospitalProfileProvider`, `HospitalLiveStatusProvider`,
+  `ETAProvider`, `EmergencyRequirementProvider`, `SelectionStateStore`,
+  `HospitalInvitationDispatcher`, `ClockProvider`.
+- **Infrastructure** (`infrastructure/*`): TEST/DEV ONLY in-memory reference impls.
 
-## Ranking Process
-1. Retrieve hospital profiles and live statuses.
-2. Validate data freshness (FRESH vs STALE vs EXPIRED).
-3. Calculate emergency-specific ETA via ETAProvider.
-4. Apply hard eligibility filters (mandatory capabilities, department status, accepting status, max ETA/distance).
-5. Score eligible hospitals using weighted normalized factors (Default: Capability 50%, ETA 30%, Resources 20%).
-6. Rank deterministically (with tie-breaking).
-7. Produce Top-N candidates.
+## Determinism, freshness & safety
+- Same state + same input ⇒ same decision (property-tested).
+- Freshness is a decision rule: `FRESH` / `STALE` / `EXPIRED`, clock-skew aware.
+  STALE behavior is an explicit, configurable policy (`DEGRADE` default).
+- Hard filters run before scoring; ineligible hospitals never become candidates.
+- Malformed ETA (NaN/negative/Infinity) and missing live status are **excluded
+  with structured reasons**, never scored favorably or silently dropped.
+- Pickup irreversibly locks the destination; post-lock responses cannot change it.
+- Selection-state persistence and multi-instance safety are delegated to the
+  injected store's atomic `compareAndSwap` (see the integration guide).
 
-## Selection Lifecycle
-- **SEARCHING -> INVITED -> TEMPORARILY_ASSIGNED -> REASSIGNED -> LOCKED -> EXHAUSTED**
-- Candidate States: **PENDING -> ACCEPTED -> REJECTED -> SUPERSEDED -> LOCKED -> EXPIRED**
-- Pre-pickup: Better-ranked acceptance replaces current temporary assignment. Lower-ranked acceptance cannot replace a higher assignment.
-- Patient Pickup: Irreversibly locks the current assigned hospital. Post-pickup responses cannot reassign.
+## Ranking
+Default weights: **Capability 50% / ETA 30% / Resources 20%.** ETA score decays
+linearly to 0 at `maxETASeconds`. Deterministic tie-break:
+capability → ETA → resource → hospitalId.
 
-## Concurrency & Idempotency
-Handles simultaneous hospital responses, out-of-order deliveries, duplicate accepts/rejections, and state transitions deterministically through version-safe candidate state validation.
+## Usage
+```ts
+const ranking = new HospitalRankingEngine(profileProvider, liveStatusProvider, etaProvider, clock);
+const result = await ranking.rankHospitals({ emergency });
 
-## Why AI is Excluded
-Enforces strict deterministic rules, explainability, auditability, and reproducible decisions without opaque probabilistic black-box ranking.
+const selection = new HospitalSelectionEngine(clock, selectionStore); // inject a durable store in prod
+await selection.initializeSelection({ emergencyId, rankedHospitals: result.rankedHospitals, topN: 3 });
+await selection.processResponse({ emergencyId, candidateId, hospitalId, response: 'ACCEPT' });
+await selection.processPickup({ emergencyId, pickedUpAt: new Date() }); // locks
+```
+
+## Scripts
+- `npm run build` — compile to `dist/` (CommonJS + `.d.ts`).
+- `npm run typecheck` — `tsc --noEmit`.
+- `npm test` — full Jest suite (unit / freshness / eligibility / selection /
+  persistence / errors / property / adversarial / contract).
+- `npm run harness` — run the read-only Docsahab integration harness.
+
+## Integration
+See `DOCSAHAB_HOSPITAL_ENGINE_INTEGRATION_GUIDE.md`,
+`DOCSAHAB_HOSPITAL_ENGINE_FILE_MAP.md`, and `integration-contract.json`. Two
+product decisions are flagged there: **STALE data policy** and **fallback
+retirement**. The engine must become the *single* hospital decision authority —
+the current Docsahab decision path is retired at cutover, never run in parallel.

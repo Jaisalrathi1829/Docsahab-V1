@@ -1,3 +1,10 @@
+// ============================================================================
+// Public API — the single canonical surface consumers import.
+// ============================================================================
+// There is exactly ONE configuration system, ONE error model, and ONE of each
+// provider interface. No dead/duplicate modules are exported.
+// ============================================================================
+
 export {
   HospitalId,
   EmergencyId,
@@ -29,8 +36,9 @@ export {
   CapacityIndicators,
   HospitalLiveStatusSnapshot,
   FreshnessLevel,
+  FreshnessAssessment,
+  classifyFreshness,
   createHospitalLiveStatus,
-  isStatusFresh,
 } from './domain/models/hospital-live-status';
 
 export {
@@ -56,12 +64,13 @@ export {
 
 export {
   RankingConfiguration,
-  FreshnessThresholds,
+  FreshnessPolicy,
   TieBreakPolicy,
   CapabilityPolicy,
   ResourcePolicy,
   DEFAULT_RANKING_CONFIGURATION,
   validateConfiguration,
+  mergeConfiguration,
   ValidationResult,
 } from './domain/ranking/configuration';
 
@@ -69,11 +78,13 @@ export {
   RankingInput,
   RankingResult,
   RankedHospital,
+  ExcludedHospital,
   HospitalRankingEngine,
 } from './domain/ranking/engine';
 
 export {
   SnapshotInputs,
+  ETAResult as SnapshotETAResult,
   createHospitalSnapshot as createHospitalSnapshotWithInputs,
 } from './domain/ranking/snapshot';
 
@@ -98,7 +109,16 @@ export {
   isStateLocked,
   canTransition,
   canCandidateTransition,
+  assertSelectionTransition,
 } from './domain/selection/state';
+
+export {
+  InitializeInput,
+  ResponseInput as ReducerResponseInput,
+  initializeSelection,
+  reduceResponse,
+  reducePickup,
+} from './domain/selection/reducer';
 
 export {
   SelectionInput,
@@ -115,11 +135,6 @@ export {
 } from './errors/ranking-errors';
 
 export {
-  DomainErrorType,
-  DomainError,
-} from './domain/errors';
-
-export {
   HospitalProfileProvider,
   HospitalLiveStatusProvider,
   ETAProvider,
@@ -133,6 +148,20 @@ export {
 } from './ports/providers';
 
 export {
+  SelectionStateStore,
+  VersionedSelection,
+  CasResult,
+  CasSuccess,
+  CasConflict,
+} from './ports/selection-state-store';
+
+export {
+  EmergencyRequirementProvider,
+  EmergencyRequirementContext,
+} from './ports/emergency-requirement-provider';
+
+// ── Infrastructure — TEST/DEV ONLY reference implementations ────────────────
+export {
   InMemoryHospitalProfileProvider,
   InMemoryHospitalLiveStatusProvider,
   HaversineETAProvider,
@@ -140,7 +169,5 @@ export {
   createDemoHospitalData,
 } from './infrastructure/in-memory';
 
-export {
-  DEFAULT_RANKING_CONFIG,
-  validateRankingConfig,
-} from './domain/config';
+export { InMemorySelectionStateStore } from './infrastructure/in-memory-selection-store';
+export { InMemoryInvitationDispatcher } from './infrastructure/in-memory-dispatcher';

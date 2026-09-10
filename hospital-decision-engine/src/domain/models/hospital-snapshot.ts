@@ -18,6 +18,10 @@ export interface DerivedValues {
   capabilityMatch: CapabilityMatchResult;
   resourceAvailability: ResourceAvailabilityResult;
   eligibility: EligibilityResult;
+  /** True when STALE live data was used under the DEGRADE freshness policy. */
+  usedStaleData: boolean;
+  /** Confidence multiplier applied to live-derived scores (1 = full trust). */
+  confidenceMultiplier: number;
 }
 
 export interface CapabilityMatchResult {
@@ -53,6 +57,11 @@ export type EligibilityReason =
   | { type: 'EXCESSIVE_ETA'; etaSeconds: number; maxETASeconds: number }
   | { type: 'OUTSIDE_GEOGRAPHIC_BOUNDS' }
   | { type: 'DATA_EXPIRED'; freshness: FreshnessLevel }
+  | { type: 'DATA_STALE'; freshness: FreshnessLevel }
+  | { type: 'DATA_TIMESTAMP_IN_FUTURE'; ageMs: number }
+  | { type: 'MISSING_LIVE_STATUS' }
+  | { type: 'ETA_UNAVAILABLE' }
+  | { type: 'INVALID_ETA_DATA'; etaSeconds?: number; distanceKm?: number }
   | { type: 'EXPLICITLY_EXCLUDED' }
   | { type: 'DEPARTMENT_UNAVAILABLE'; department: string };
 

@@ -1,0 +1,119 @@
+{
+  "engine": "hospital-decision-engine",
+  "version": "2.0.0",
+  "moduleSystem": "commonjs",
+  "runtimeDependencies": [],
+  "authority": {
+    "engineOwns": [
+      "eligibility", "hardFiltering", "capabilityEvaluation", "resourceEvaluation",
+      "etaScoring", "ranking", "candidateOrdering", "acceptancePrecedence",
+      "temporaryAssignment", "betterRankedReplacement", "pickupLock", "noReassignmentAfterPickup"
+    ],
+    "docsahabOwns": [
+      "persistence", "atomicCommit", "assignedHospitalIdTruth", "invitationTransport",
+      "events", "timeline", "requirementDerivation", "auth", "emergencyLifecycle"
+    ],
+    "rule": "Exactly one authority may mutate Emergency.assignedHospitalId. Shadow-mode before cutover."
+  },
+  "engineInputs": {
+    "rankHospitals": {
+      "emergency": "EmergencyRequirement",
+      "hospitalIds": "HospitalId[] (optional)",
+      "config": "Partial<RankingConfiguration> (optional)"
+    },
+    "initializeSelection": { "emergencyId": "EmergencyId", "rankedHospitals": "RankedHospital[]", "topN": "number (optional)" },
+    "processResponse": { "emergencyId": "EmergencyId", "candidateId": "string", "hospitalId": "HospitalId", "response": "ACCEPT|REJECT", "respondedAt": "Date (optional)" },
+    "processPickup": { "emergencyId": "EmergencyId", "pickedUpAt": "Date" }
+  },
+  "engineOutputs": {
+    "RankingResult": {
+      "rankedHospitals": "RankedHospital[] (eligible, rank 1..n)",
+      "excludedHospitals": "{ hospitalId, reasons[], freshness? }[]",
+      "eligibleCount": "number", "excludedCount": "number", "totalConsidered": "number",
+      "noEligibleHospitals": "boolean", "configurationVersion": "string", "rankedAt": "Date"
+    },
+    "SelectionDecision": {
+      "previousAssignment": "HospitalCandidate?", "newAssignment": "HospitalCandidate?",
+      "replacementOccurred": "boolean", "lockPreventedReassignment": "boolean",
+      "stateChanged": "boolean", "reason": "SelectionDecisionReason"
+    }
+  },
+  "units": { "distance": "km", "eta": "seconds", "freshnessThresholds": "milliseconds" },
+  "providerContracts": {
+    "HospitalProfileProvider": ["getAllHospitalProfiles", "getHospitalProfile"],
+    "HospitalLiveStatusProvider": ["getAllHospitalLiveStatuses", "getHospitalLiveStatus", "updateHospitalLiveStatus"],
+    "ETAProvider": ["calculateETA"],
+    "EmergencyRequirementProvider": ["deriveRequirement"],
+    "SelectionStateStore": ["load", "create", "compareAndSwap"],
+    "HospitalInvitationDispatcher": ["sendInvitation", "sendInvitations"],
+    "ClockProvider": ["now"]
+  },
+  "persistenceContract": {
+    "concurrency": "optimistic",
+    "primitive": "compareAndSwap(emergencyId, expectedVersion, next)",
+    "casResult": "{ ok:true, version } | { ok:false, conflict:true, current }",
+    "retry": "engine retries up to 5 times; no-op decisions (stateChanged=false) skip writes",
+    "sqlMapping": {
+      "load": "SELECT snapshot, version WHERE emergency_id=$1",
+      "create": "INSERT (unique emergency_id) version=1",
+      "compareAndSwap": "UPDATE SET snapshot=$1, version=version+1 WHERE emergency_id=$2 AND version=$3"
+    }
+  },
+  "selectionStateModel": {
+    "selectionStates": ["SEARCHING", "INVITED", "TEMPORARILY_ASSIGNED", "REASSIGNED", "LOCKED", "EXHAUSTED"],
+    "candidateStates": ["PENDING", "ACCEPTED", "REJECTED", "SUPERSEDED", "LOCKED", "EXPIRED"],
+    "terminalSelectionStates": ["LOCKED", "EXHAUSTED"],
+    "enforcement": "assertSelectionTransition guards every selection-state mutation"
+  },
+  "errorModel": {
+    "throw": {
+      "RankingError.INVALID_CONFIGURATION": { "retryable": false },
+      "RankingError.PROFILE_PROVIDER_FAILURE": { "retryable": true },
+      "RankingError.LIVE_STATUS_PROVIDER_FAILURE": { "retryable": true },
+      "SelectionError.NO_SELECTION_STATE": { "retryable": false },
+      "SelectionError.SELECTION_ALREADY_EXISTS": { "retryable": false },
+      "SelectionError.PERSISTENCE_FAILURE": { "retryable": true },
+      "SelectionError.PERSISTENCE_CONFLICT_EXHAUSTED": { "retryable": true }
+    },
+    "returnedAsDecisionReason": [
+      "RESPONSE_REJECTED_LOCKED", "RESPONSE_REJECTED_EXPIRED", "RESPONSE_REJECTED_DUPLICATE",
+      "RESPONSE_REJECTED_OBSOLETE", "RESPONSE_REJECTED_UNKNOWN_CANDIDATE",
+      "RESPONSE_REJECTED_INVALID_TRANSITION"
+    ],
+    "rule": "try/catch throwables; inspect decision.reason.type for response-level conditions"
+  },
+  "eventMapping": {
+    "INITIAL_ASSIGNMENT": ["hospitalAccepted", "hospitalAssigned"],
+    "REPLACEMENT": ["hospitalAccepted", "hospitalReassigned"],
+    "NO_REPLACEMENT_LOWER_RANK": ["hospitalAccepted"],
+    "REJECTION_RECORDED": ["hospitalRejected"],
+    "LOCKED_AT_PICKUP": ["hospitalAssignmentLocked"],
+    "NO_ELIGIBLE_CANDIDATES": ["hospitalSearchExhausted"],
+    "PICKUP_WITHOUT_ASSIGNMENT": ["hospitalSearchExhausted"]
+  },
+  "adapterRequirements": [
+    "DocsahabProfileProvider (Hospital table → HospitalProfile)",
+    "DocsahabLiveStatusProvider (NEW hospital_live_status table → HospitalLiveStatus)",
+    "DocsahabETAProvider (navigation.provider minutes → seconds)",
+    "DocsahabRequirementProvider (probableEmergency string → capabilities)",
+    "PostgresSelectionStateStore (reuse hospital.repository transaction pattern)"
+  ],
+  "schemaRequirements": {
+    "newTables": ["hospital_live_status", "hospital_selection_state"],
+    "capabilityExpansion": {
+      "representableToday": ["CARDIAC_EMERGENCY", "TRAUMA", "ICU (via hasICU)"],
+      "requiresSchemaChange": ["NEUROLOGICAL_EMERGENCY", "PEDIATRIC_EMERGENCY", "OBSTETRIC_EMERGENCY", "BURN_UNIT", "TOXICOLOGY", "ISOLATION"]
+    },
+    "allAdditive": true
+  },
+  "productDecisionsRequired": [
+    { "id": "STALE_POLICY", "default": "DEGRADE", "options": ["EXCLUDE", "DEGRADE", "ALLOW"], "configPath": "freshnessPolicy.staleBehavior" },
+    { "id": "FALLBACK_RETIREMENT", "recommended": "retire radius-expansion or move to orchestration", "engineImplementsFallback": false }
+  ],
+  "defaults": {
+    "weights": { "capability": 0.5, "eta": 0.3, "resource": 0.2 },
+    "freshMs": 300000, "staleMs": 900000, "maxClockSkewMs": 60000,
+    "staleConfidenceMultiplier": 0.6, "maxETASeconds": 1800, "maxDistanceKm": 50,
+    "topN": 3, "invitationTtlMs": 300000
+  }
+}
