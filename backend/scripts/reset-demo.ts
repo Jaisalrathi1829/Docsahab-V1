@@ -59,6 +59,19 @@ async function main() {
     console.log(`  ✅ ${shells.count} unregistered ambulance shells removed`);
   }
 
+  // The hospital-decision-engine hard-excludes any hospital whose
+  // HospitalLiveStatus.lastUpdated is older than its freshness policy's
+  // staleMs (15 minutes) — see hospital-decision-engine/src/domain/ranking/
+  // configuration.ts. In production a hospital's own console pushes this on
+  // a heartbeat; nothing does that here, so seeded rows silently go EXPIRED
+  // ~15 minutes after the last seed/reset and every hospital search comes
+  // back with zero eligible candidates. Stamping it fresh on every reset is
+  // what keeps the demo dispatchable, exactly like the ambulance fleet above.
+  const liveStatus = await prisma.hospitalLiveStatus.updateMany({
+    data: { lastUpdated: new Date() },
+  });
+  console.log(`  ✅ ${liveStatus.count} hospital live-status records marked fresh`);
+
   console.log("\n🎉 Demo reset complete — run the workflow from a clean slate.\n");
 }
 
